@@ -1,5 +1,6 @@
 import torch
 from dataclasses import dataclass
+from typing import List
 
 import torch.nn.functional as F
 import logging 
@@ -22,7 +23,7 @@ class FlexRoundLinear(torch.nn.Module):
         super(FlexRoundLinear, self).__init__()
         self.config = config
         if self.config.weight_config:
-            self.weight_quantizer = WUniformAffineQuantizer.create_quantizer_from_config(self.config.weight_config)
+            self.weight_quantizer = WUniformAffineQuantizer.init_from_tensor(orig_layer.weight, self.config.weight_config)
             self.weight_quantizer.set_inited(False)
         
         self.weight = orig_layer.weight
@@ -45,11 +46,12 @@ class FlexRoundLinear(torch.nn.Module):
         # 2. set `self.inference_mode` to True 
         with torch.no_grad():
             final_weight = self.weight_quantizer(self.weight)
-            self.weight = final_weight
+            self.weight.data.copy_(final_weight)
+            self.weight.requires_grad_ = False
             self.inference_mode = True
             logger.info("Set FlexRoundLieaner to inference mode.")
     
-    def get_trainable_params(self):
+    def get_trainable_params(self) -> List[torch.Tensor]:
         if self.config.weight_config:
             return self.weight_quantizer.get_trainable_params()
         else:

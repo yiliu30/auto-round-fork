@@ -110,25 +110,58 @@ class WUniformAffineQuantizer(nn.Module):
         x_min = self.running_min
         x_max = self.running_max
         return x_min, x_max
+    
+    
+        # if self.inited is False:
+        #     # TODO: move it into `__init__`
+        #     if self.leaf_param:
+        #         self.delta, self.zero_point = self.init_quantization_scale(x.clone().detach(), self.channel_wise)
+        #     else:
+        #         delta, self.zero_point = self.init_quantization_scale(x, self.channel_wise)
+        #         self.delta1 = torch.nn.Parameter(torch.log(torch.tensor(delta)).clone()) 
+        #         self.delta2 = torch.nn.Parameter(torch.zeros_like(x)) 
+        #         if x.dim() >= 4:
+        #             self.delta3 = torch.nn.Parameter(torch.zeros_like(x[:, 0, 0, 0]).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)) 
+        #         else:
+        #             self.delta3 = torch.nn.Parameter(torch.zeros_like(x[:, 0].unsqueeze(-1))) 
+        #         if x.dim() >= 4:
+        #             self.delta4 = torch.nn.Parameter(torch.zeros_like(x[0, :, 0, 0]).unsqueeze(0).unsqueeze(-1).unsqueeze(-1))
+        #     self.inited = True
+    @classmethod
+    def init_from_tensor(cls, x, config: QuantizerConfig):
+        quantizer = cls(**config.to_dict())
+        if quantizer.leaf_param:
+            quantizer.delta, quantizer.zero_point = quantizer.init_quantization_scale(x.clone().detach(), quantizer.channel_wise)
+        else:
+            delta, quantizer.zero_point = quantizer.init_quantization_scale(x, quantizer.channel_wise)
+            quantizer.delta1 = torch.nn.Parameter(torch.log(torch.tensor(delta)).clone()) 
+            quantizer.delta2 = torch.nn.Parameter(torch.zeros_like(x)) 
+            if x.dim() >= 4:
+                quantizer.delta3 = torch.nn.Parameter(torch.zeros_like(x[:, 0, 0, 0]).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)) 
+            else:
+                quantizer.delta3 = torch.nn.Parameter(torch.zeros_like(x[:, 0].unsqueeze(-1))) 
+            if x.dim() >= 4:
+                quantizer.delta4 = torch.nn.Parameter(torch.zeros_like(x[0, :, 0, 0]).unsqueeze(0).unsqueeze(-1).unsqueeze(-1))
+        return quantizer
 
     def forward(self, x: torch.Tensor):
         # TODO: current we only support Linear
         assert x.dim() < 4, f"not support dim > 4, but got tensor with shape: {x.shape}"
-        if self.inited is False:
-            # TODO: move it into `__init__`
-            if self.leaf_param:
-                self.delta, self.zero_point = self.init_quantization_scale(x.clone().detach(), self.channel_wise)
-            else:
-                delta, self.zero_point = self.init_quantization_scale(x, self.channel_wise)
-                self.delta1 = torch.nn.Parameter(torch.log(torch.tensor(delta)).clone()) 
-                self.delta2 = torch.nn.Parameter(torch.zeros_like(x)) 
-                if x.dim() >= 4:
-                    self.delta3 = torch.nn.Parameter(torch.zeros_like(x[:, 0, 0, 0]).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)) 
-                else:
-                    self.delta3 = torch.nn.Parameter(torch.zeros_like(x[:, 0].unsqueeze(-1))) 
-                if x.dim() >= 4:
-                    self.delta4 = torch.nn.Parameter(torch.zeros_like(x[0, :, 0, 0]).unsqueeze(0).unsqueeze(-1).unsqueeze(-1))
-            self.inited = True
+        # if self.inited is False:
+        #     # TODO: move it into `__init__`
+        #     if self.leaf_param:
+        #         self.delta, self.zero_point = self.init_quantization_scale(x.clone().detach(), self.channel_wise)
+        #     else:
+        #         delta, self.zero_point = self.init_quantization_scale(x, self.channel_wise)
+        #         self.delta1 = torch.nn.Parameter(torch.log(torch.tensor(delta)).clone()) 
+        #         self.delta2 = torch.nn.Parameter(torch.zeros_like(x)) 
+        #         if x.dim() >= 4:
+        #             self.delta3 = torch.nn.Parameter(torch.zeros_like(x[:, 0, 0, 0]).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)) 
+        #         else:
+        #             self.delta3 = torch.nn.Parameter(torch.zeros_like(x[:, 0].unsqueeze(-1))) 
+        #         if x.dim() >= 4:
+        #             self.delta4 = torch.nn.Parameter(torch.zeros_like(x[0, :, 0, 0]).unsqueeze(0).unsqueeze(-1).unsqueeze(-1))
+        #     self.inited = True
 
         x_int = round_ste(x / (self.delta1 + self.delta2 + self.delta3 + self.delta4).exp()) if x.dim() >= 4 else round_ste(x / (self.delta1 + self.delta2 + self.delta3).exp())
         x_quant = torch.clamp(x_int, - 2 ** (self.n_bits - 1), 2 ** (self.n_bits - 1) - 1) 
