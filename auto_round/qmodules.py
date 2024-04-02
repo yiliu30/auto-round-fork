@@ -44,6 +44,7 @@ class FlexRoundLinear(torch.nn.Module):
         # Unrapper the module for inference
         # 1. use the last delata to update the weight and assign to `self.weight`
         # 2. set `self.inference_mode` to True 
+        # * Note it not use the best deltas
         with torch.no_grad():
             final_weight = self.weight_quantizer(self.weight)
             self.weight.data.copy_(final_weight)
@@ -53,7 +54,7 @@ class FlexRoundLinear(torch.nn.Module):
     
     def get_trainable_params(self) -> List[torch.Tensor]:
         if self.config.weight_config:
-            return self.weight_quantizer.get_trainable_params()
+            return list(self.weight_quantizer.parameters())
         else:
             return []
 

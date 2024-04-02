@@ -3,6 +3,7 @@
 import torch
 import random
 from auto_round.qmodules import QuantizerConfig, FlexRoundLinear, FlexRoundModuleConfig, default_quantizer_config
+from auto_round.quantizer import WUniformAffineQuantizer
 
 random.seed(0)
 torch.manual_seed(0)
@@ -27,6 +28,11 @@ class TestFlexRoundLinear:
                 x = self.fc2(x)
                 return x
         return ToyModel(in_features=in_features)
+    
+    def test_quantizer(self):
+        tensor = torch.randn(128, 512)
+        quantizer = WUniformAffineQuantizer.init_from_tensor(tensor, default_quantizer_config)
+        assert len(list(quantizer.parameters())) == 3, "Should have 3 parameters"
     
     def test_all(self):
         in_features = 32
