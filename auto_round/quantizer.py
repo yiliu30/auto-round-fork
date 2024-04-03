@@ -166,13 +166,8 @@ class WUniformAffineQuantizer(nn.Module):
         #             self.delta4 = torch.nn.Parameter(torch.zeros_like(x[0, :, 0, 0]).unsqueeze(0).unsqueeze(-1).unsqueeze(-1))
         #     self.inited = True
         # x_int = round_ste(x / (self.delta1 + self.delta2 + self.delta3 + self.delta4).exp()) if x.dim() >= 4 else round_ste(x / (self.delta1 + self.delta2 + self.delta3).exp())
-        #print(self.delta1, self.delta2, self.delta3)
-        delta_sum_exp = (self.delta1 + self.delta2 + self.delta3).exp()
-        if self.delta1.grad is not None:
-            print(f"delta1 grad range: {self.delta1.grad.min().item()} {self.delta1.grad.max().item()}")
-            print(f"delta2 grad range: {self.delta2.grad.min().item()} {self.delta2.grad.max().item()}")
-            print(f"delta3 grad range: {self.delta3.grad.min().item()} {self.delta3.grad.max().item()}")
-        print(f"delta sum range {delta_sum_exp.min().item()} {delta_sum_exp.max().item()}")
+        delta_sum = (self.delta1 + self.delta2 + self.delta3)
+        delta_sum_exp = delta_sum.exp()
         x_int = round_ste(x / delta_sum_exp)
         x_quant = torch.clamp(x_int, - 2 ** (self.n_bits - 1), 2 ** (self.n_bits - 1) - 1) 
         x_dequant = x_quant * self.delta1.exp()

@@ -19,7 +19,6 @@ from dataclasses import dataclass
 import os
 import torch
 from tqdm import tqdm
-
 from .utils import (
     CpuInfo,
     block_forward,
@@ -353,8 +352,9 @@ def unwrapper_block(block, vs, min_scales, max_scales):
             set_module(block, n, orig_layer)
         if global_config.use_flexround:
             if isinstance(m, FlexRoundLinear):
+                updated_orig_layer = m.unwrapper()
+                set_module(block, n, updated_orig_layer)
                 logger.info(f"Set FlexRoundLieaner layer ({n}) to inference mode.")
-                m.unwrapper()
 
 
 class AutoRound(object):
@@ -446,6 +446,9 @@ class AutoRound(object):
         loss_scale_factor: float = 1000,
         **kwargs,
     ):
+        if global_config.use_flexround:
+            self.amp = False
+            logger.warning(f"force amp to False")
         self.loss_scale_factor = loss_scale_factor
         self.model_orig_dtype = model.dtype
         self.model = model.eval().to("cpu")
@@ -491,7 +494,7 @@ class AutoRound(object):
             if self.device == "cpu" and not CpuInfo().bf16:
                 self.amp = False
                 self.model = self.model.to(torch.float32)
-                logger.warning("amp is set to FALSE as the current" "device does not support the 'bf16' data type.")
+                logger.warning("amp is set to FALSE as the current")
             else:
                 self.model = self.model.to(self.amp_dtype)
         else:
@@ -989,14 +992,15 @@ class AutoRound(object):
                     current_output = current_output[indices, :, :]
                     current_output = current_output.reshape(-1, current_output.shape[-1])
                 current_output = move_input_to_device(current_output, device)
-
                 output_q = block_forward(
                     block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device
                 )
                 if self.amp and not check_is_cpu(device):
+                    logger.warning("use amp for training")
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
                         loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
                 else:
+                    
                     loss = mse_loss(  # pylint: disable=not-callable
                         output_q.to(torch.float32), current_output.to(torch.float32)
                     )

@@ -22,35 +22,18 @@ class FlexRoundLinear(torch.nn.Module):
         assert enable_minmax_tuning is False, "`enable_minmax_tuning` is a placeholder only."
         super(FlexRoundLinear, self).__init__()
         self.config = config
+        self._orig_layer = orig_layer
         if self.config.weight_config:
-            self.weight_quantizer = WUniformAffineQuantizer.init_from_tensor(orig_layer.weight, self.config.weight_config)
-        
-        self.weight = orig_layer.weight
-        self.bias = orig_layer.bias
-        self.org_weight = orig_layer.weight.data.clone()
-        if orig_layer.bias is not None:
-            self.bias = orig_layer.bias
-            self.org_bias = orig_layer.bias.data.clone()
-        else:
-            self.bias = None
-            self.org_bias = None
+            self.weight_quantizer = WUniformAffineQuantizer.init_from_tensor(self._orig_layer.weight, self.config.weight_config)
         self.inference_mode = False
         
     def forward(self, input: torch.Tensor):
-        if self.inference_mode:
-            weight = self.weight
-            # TODO: is ok?
-            bias = self.org_bias.to(weight.dtype) if self.org_bias is not None else None
-        elif self.config.weight_config:
-            weight = self.weight_quantizer(self.weight)
-            bias = self.bias
+        if self.config.weight_config:
+            weight = self.weight_quantizer(self._orig_layer.weight)
+            bias = self._orig_layer.bias
         else:
             raise ValueError("Neither inference mode nor quantization is enabled.")
         
-        # if input.dtype != weight.dtype:
-        #     logger.warning(f"Input dtype {input.dtype} is different from weight dtype {weight.dtype}. Cast input to weight dtype.")
-        #     input = input.to(weight.dtype)
-        # logger.warning(f"Input dtype {input.dtype} weight dtype {weight.dtype} bias dtype: {bias.dtype}.")
         out = F.linear(input, weight, bias)
         return out
 
@@ -59,12 +42,14 @@ class FlexRoundLinear(torch.nn.Module):
         # 1. use the last delata to update the weight and assign to `self.weight`
         # 2. set `self.inference_mode` to True 
         # * Note it not use the best deltas
+        
         with torch.no_grad():
-            final_weight = self.weight_quantizer(self.org_weight)
-            self.weight.data.copy_(final_weight)
-            self.weight.requires_grad_ = False
+            final_weight = self.weight_quantizer(self._orig_layer.weight)
+            self._orig_layer.weight.data.copy_(final_weight)
+            self._orig_layer.weight.requires_grad_ = False
             self.inference_mode = True
             logger.info("Set FlexRoundLieaner to inference mode.")
+            return self._orig_layer
     
     def get_trainable_params(self) -> List[torch.Tensor]:
         if self.config.weight_config:

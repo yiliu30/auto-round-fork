@@ -1,0 +1,1 @@
+USE_FLEXROUND=1 python3 main.py --model_name /models/opt-125m/  --bits 8 --group_size -1  --iters 20  --enable_minmax_tuning   --n_samples 32 --lr 1e-4 --disable_amp
