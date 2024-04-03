@@ -267,7 +267,11 @@ if __name__ == '__main__':
     model.eval()
     if args.device != "cpu":
         torch.cuda.empty_cache()
-
+    
+    # TODO: for temp evaluation
+    from ppl_eval import eval_wikitext2
+    eval_wikitext2(model=model, tokenizer=tokenizer)
+    exit(0)
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
     deployment_device = args.deployment_device.split(',')

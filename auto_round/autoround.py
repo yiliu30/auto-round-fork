@@ -15,8 +15,10 @@
 
 import copy
 import time
-
+from dataclasses import dataclass
+import os
 import torch
+from tqdm import tqdm
 
 from .utils import (
     CpuInfo,
@@ -39,10 +41,19 @@ from .utils import (
     set_module,
 )
 
+from .qmodules import FlexRoundLinear, FlexRoundModuleConfig, default_quantizer_config, QuantizerConfig
+
 if is_hpu_available:
     import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
     import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
 
+
+@dataclass
+class GlobalConfig:
+    use_autoround: bool = os.getenv("USE_AUTOROUND", "0") == "1"
+    use_flexround: bool = os.getenv("USE_FLEXROUND", "0") == "1"
+
+global_config = GlobalConfig()
 
 class WrapperLinear(torch.nn.Module):
     def __init__(self, orig_layer, enable_minmax_tuning=True):
@@ -273,7 +284,19 @@ def wrapper_block(block, enable_minmax_tuning):
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue
-            new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning)
+            if global_config.use_autoround:
+                new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning)
+            elif global_config.use_flexround:
+                # self.num_bits = self.orig_layer.bits
+                # self.group_size = self.orig_layer.group_size
+                # self.scale_dtype = self.orig_layer.scale_dtype
+                # self.sym = self.orig_layer.sym
+                weight_quantizer_config =  QuantizerConfig(n_bits=m.bits)
+                flex_layer_config = FlexRoundModuleConfig(weight_config=weight_quantizer_config)
+                new_m = FlexRoundLinear(orig_layer=m, config=flex_layer_config)
+                logger.info(f"Set FlexRoundLieaner{n} to training mode.")
+            else:
+                raise NotImplementedError("Please set USE_AUTOROUND or USE_FLEXROUND to 1 in the environment variable")
             set_module(block, n, new_m)
             quantized_layers.append(n)
 
@@ -289,8 +312,19 @@ def wrapper_block(block, enable_minmax_tuning):
                 quantized_layers.append(n)
         except:
             pass
+    logger.info(f"Quantized layers: {quantized_layers}")
     return quantized_layers, unquantized_layers
 
+
+
+def lp_loss(pred, tgt, p=2.0, reduction='none'):
+    """
+    loss function measured in L_p Norm
+    """
+    if reduction == 'none':
+        return (pred - tgt).abs().pow(p).sum(1).mean()
+    else:
+        return (pred - tgt).abs().pow(p).mean()
 
 @torch.no_grad()
 def unwrapper_block(block, vs, min_scales, max_scales):
@@ -317,6 +351,10 @@ def unwrapper_block(block, vs, min_scales, max_scales):
                 max_scale = torch.clamp(max_scale, -1, 0)
             orig_layer = m.unwrapper(v, min_scale, max_scale)
             set_module(block, n, orig_layer)
+        if global_config.use_flexround:
+            if isinstance(m, FlexRoundLinear):
+                logger.info(f"Set FlexRoundLieaner layer ({n}) to inference mode.")
+                m.unwrapper()
 
 
 class AutoRound(object):
@@ -405,8 +443,10 @@ class AutoRound(object):
         dynamic_max_gap: int = -1,
         data_type: str = "int",  ##only support data_type
         scale_dtype: str = "fp32",
+        loss_scale_factor: float = 1000,
         **kwargs,
     ):
+        self.loss_scale_factor = loss_scale_factor
         self.model_orig_dtype = model.dtype
         self.model = model.eval().to("cpu")
         self.amp = amp
@@ -492,9 +532,45 @@ class AutoRound(object):
         Returns:
         The specified optimizer.
         """
+        if global_config.use_flexround:
+            logger.info("Running flexround, use Adam optimizer")
+            return torch.optim.Adam
+        
         from auto_round.sign_sgd import SGD
 
         return SGD
+    
+    def _init_optimizer(self,):
+        if global_config.use_autoround:
+            if self.enable_minmax_tuning:
+                optimizer = self.optimizer(
+                    [{"params": self._round_params}, {"params": self._minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
+                )
+            else:
+                optimizer = self.optimizer(self._round_params, lr=self.lr, weight_decay=0)
+            return optimizer
+        elif global_config.use_flexround:
+            optimizer = torch.optim.Adam(self._deltas_params_lst, lr=self.lr) # 1e-4 or 1e-3
+            return optimizer
+        else:
+            raise NotImplementedError("Please set USE_AUTOROUND or USE_FLEXROUND to 1 in the environment variable")
+        
+    
+    def _init_scheduler(self, optimizer):
+        if global_config.use_autoround:
+            if self.lr_scheduler is None:
+                lr_schedule = torch.optim.lr_scheduler.LinearLR(
+                    optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters, verbose=True
+                )
+            else:
+                lr_schedule = copy.deepcopy(self.lr_scheduler)
+            return lr_schedule
+        elif global_config.use_flexround:
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=self.iters, eta_min=0., verbose=True)
+            return scheduler
+        else:
+            raise NotImplementedError("Please set USE_AUTOROUND or USE_FLEXROUND to 1 in the environment variable")
+        
 
     def get_scaler(self):
         """Returns scaler, in SignRound, no need to use scaler."""
@@ -510,7 +586,9 @@ class AutoRound(object):
         Returns:
         The scaled loss.
         """
-        scale_loss = loss * 1000
+        if global_config.use_flexround:
+            self.loss_scale_factor = 1.0
+        scale_loss = loss * self.loss_scale_factor
         scale_loss.backward()
         if is_hpu_available:
             htcore.mark_step()
@@ -647,7 +725,8 @@ class AutoRound(object):
 
         self.start_time = time.time()
         total_cnt = 0
-        for data in self.dataloader:
+        logger.info(f"Start calibration with {n_samples} samples")
+        for data in tqdm(self.dataloader):
             if data is None:
                 continue
             if isinstance(data, torch.Tensor):
@@ -788,8 +867,27 @@ class AutoRound(object):
                 m.orig_forward = m.forward
                 m.forward = partial(self.get_forward_func(n), m)
                 break
+    
+    @staticmethod
+    def _get_block_params(block):
+        """Get the parameters of the given block.
 
-    def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
+        Args:
+        block: The block of the model.
+
+        Returns:
+        list: The parameters of the block.
+        """
+        params = []
+        for n, m in block.named_modules():
+            if isinstance(m, FlexRoundLinear):
+                cur_params = m.get_trainable_params()
+                logger.info(f"get {len(cur_params)} trainable params for {n}")
+                params += cur_params
+        logger.info(f"get {len(params)} trainable params for the block")
+        return params
+
+    def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu"), block_ids=None):
         """Quantize the weights of a given block of the model.
 
         Args:
@@ -815,9 +913,10 @@ class AutoRound(object):
 
         if q_input is not None:
             input_ids = q_input.to(cache_device)
-
         quantized_layer_names, unquantized_layer_names = wrapper_block(block, self.enable_minmax_tuning)
-
+    
+        # get the parameters of the block
+        # 1. for auto-round
         round_params = []
         minmax_params = []
         for n, m in block.named_modules():
@@ -826,19 +925,30 @@ class AutoRound(object):
                 minmax_params.append(m.min_scale)
                 minmax_params.append(m.max_scale)
 
-        if self.enable_minmax_tuning:
-            optimizer = self.optimizer(
-                [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
-            )
-        else:
-            optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
+        self._round_params = round_params
+        self._minmax_params = minmax_params
+        
+        # 2. for flex-round
+        self._deltas_params_lst = self._get_block_params(block)
+        
+        optimizer = self._init_optimizer()
+        
+        # if self.enable_minmax_tuning:
+        #     optimizer = self.optimizer(
+        #         [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
+        #     )
+        # else:
+        #     optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
 
-        if self.lr_scheduler is None:
-            lr_schedule = torch.optim.lr_scheduler.LinearLR(
-                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters, verbose=False
-            )
-        else:
-            lr_schedule = copy.deepcopy(self.lr_scheduler)
+        lr_schedule = self._init_scheduler(optimizer=optimizer)
+        
+        
+        # if self.lr_scheduler is None:
+        #     lr_schedule = torch.optim.lr_scheduler.LinearLR(
+        #         optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters, verbose=False
+        #     )
+        # else:
+        #     lr_schedule = copy.deepcopy(self.lr_scheduler)
 
         pick_samples = self.train_bs
         if len(input_ids.shape) == 3:
@@ -849,10 +959,15 @@ class AutoRound(object):
             indices = torch.randperm(n_samples)[:pick_samples]
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
-        mse_loss = torch.nn.MSELoss().to(device)
+        if global_config.use_autoround:
+            mse_loss = torch.nn.MSELoss().to(device)
+        else:
+            # TODO: replace it with lp_loss?
+            mse_loss = torch.nn.MSELoss().to(device)
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
+        # for i in tqdm(range(self.iters), desc="Quant block train"):
         for i in range(self.iters):
             if self.sampler == "rand":
                 indices = torch.randperm(n_samples)[:pick_samples]
@@ -891,6 +1006,10 @@ class AutoRound(object):
                     init_loss = total_loss
 
                 self.scale_loss_and_backward(scaler, loss)
+                if i % 1 == 0:
+                    logger.info(f"iter {i}, loss: {total_loss:.6f}")
+                    logger.info(f"iter {i}, lr is : {lr_schedule.get_lr()}")
+                
 
             if total_loss < best_loss:
                 best_loss = total_loss
@@ -907,14 +1026,13 @@ class AutoRound(object):
                 if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
                     break
             self.step(scaler, optimizer, lr_schedule)
-
         last_loss = total_loss
         best_iter = self.iters
         if not self.not_use_best_mse:
             last_loss = best_loss
             best_iter = last_best_iter
         dump_info = (
-            f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
+            f"quantized {block_ids}-th block {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
             f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         )
         logger.info(dump_info)
@@ -963,7 +1081,7 @@ class AutoRound(object):
         for i in range(0, len(block_names), n_blocks):
             if n_blocks == 1:
                 n = block_names[i]
-                logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
+                logger.info(f"quantizing block {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
             else:
                 names = block_names[i : i + n_blocks]
@@ -979,6 +1097,7 @@ class AutoRound(object):
                 input_others,
                 q_input=q_input,
                 device=device,
+                block_ids=i + 1,
             )
             m.to("cpu")
             torch.cuda.empty_cache()

@@ -24,9 +24,12 @@ import torch
 from torch.amp import autocast
 
 logger = logging.getLogger("autoround")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 fh = logging.StreamHandler()
-fh_formatter = logging.Formatter("%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s", "%Y-%m-%d %H:%M:%S")
+# fh_formatter = logging.Formatter("%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s", "%Y-%m-%d %H:%M:%S")
+fh_formatter = logging.Formatter(
+    "%(asctime)s [%(levelname)s][%(filename)s:%(lineno)d] %(message)s", "%Y-%m-%d %H:%M:%S"
+)
 fh.setFormatter(fh_formatter)
 logger.addHandler(fh)
 

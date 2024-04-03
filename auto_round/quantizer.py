@@ -134,7 +134,10 @@ class WUniformAffineQuantizer(nn.Module):
             quantizer.delta, quantizer.zero_point = quantizer.init_quantization_scale(x.clone().detach(), quantizer.channel_wise)
         else:
             delta, quantizer.zero_point = quantizer.init_quantization_scale(x, quantizer.channel_wise)
-            quantizer.delta1 = torch.nn.Parameter(torch.log(torch.tensor(delta)).clone()) 
+            # TODO: is ok?
+            delta = torch.tensor(delta, device=x.device, dtype=x.dtype)
+            quantizer.delta = delta
+            quantizer.delta1 = torch.nn.Parameter(torch.log(delta.clone().detach())) 
             quantizer.delta2 = torch.nn.Parameter(torch.zeros_like(x)) 
             if x.dim() >= 4:
                 quantizer.delta3 = torch.nn.Parameter(torch.zeros_like(x[:, 0, 0, 0]).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)) 
@@ -162,10 +165,18 @@ class WUniformAffineQuantizer(nn.Module):
         #         if x.dim() >= 4:
         #             self.delta4 = torch.nn.Parameter(torch.zeros_like(x[0, :, 0, 0]).unsqueeze(0).unsqueeze(-1).unsqueeze(-1))
         #     self.inited = True
-
-        x_int = round_ste(x / (self.delta1 + self.delta2 + self.delta3 + self.delta4).exp()) if x.dim() >= 4 else round_ste(x / (self.delta1 + self.delta2 + self.delta3).exp())
+        # x_int = round_ste(x / (self.delta1 + self.delta2 + self.delta3 + self.delta4).exp()) if x.dim() >= 4 else round_ste(x / (self.delta1 + self.delta2 + self.delta3).exp())
+        #print(self.delta1, self.delta2, self.delta3)
+        delta_sum_exp = (self.delta1 + self.delta2 + self.delta3).exp()
+        if self.delta1.grad is not None:
+            print(f"delta1 grad range: {self.delta1.grad.min().item()} {self.delta1.grad.max().item()}")
+            print(f"delta2 grad range: {self.delta2.grad.min().item()} {self.delta2.grad.max().item()}")
+            print(f"delta3 grad range: {self.delta3.grad.min().item()} {self.delta3.grad.max().item()}")
+        print(f"delta sum range {delta_sum_exp.min().item()} {delta_sum_exp.max().item()}")
+        x_int = round_ste(x / delta_sum_exp)
         x_quant = torch.clamp(x_int, - 2 ** (self.n_bits - 1), 2 ** (self.n_bits - 1) - 1) 
         x_dequant = x_quant * self.delta1.exp()
+        x_dequant = x_dequant.to(x.dtype)
 
         if self.is_training and self.prob < 1.0:
             x_ans = torch.where(torch.rand_like(x) < self.prob, x_dequant, x)
