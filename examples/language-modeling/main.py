@@ -252,7 +252,8 @@ if __name__ == '__main__':
                 weight_config[n] = {"data_type": "fp"}
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
-
+    # from ppl_eval import eval_wikitext2
+    # eval_wikitext2(model=model, tokenizer=tokenizer,msg= "float model")
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input, device=device_str,

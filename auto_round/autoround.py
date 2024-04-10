@@ -501,6 +501,7 @@ class AutoRound(object):
             self.model = self.model.to(torch.float32)
         logger.info(f"using {self.model.dtype} for quantization tuning")
         self.dataset_name = dataset
+        logger.info(f"using {self.dataset_name} for calibration tuning")
 
         self.dataloader = dataloader
         self.iters = iters
@@ -1010,7 +1011,7 @@ class AutoRound(object):
                     init_loss = total_loss
 
                 self.scale_loss_and_backward(scaler, loss)
-                if i % 1 == 0:
+                if i % 20 == 0:
                     logger.info(f"iter {i}, loss: {total_loss:.6f}")
                     logger.info(f"iter {i}, lr is : {lr_schedule.get_lr()}")
                 
@@ -1191,6 +1192,9 @@ class AutoRound(object):
                         )
                     delattr(m, "scale")
                     delattr(m, "zp")
+                elif global_config.use_flexround:
+                    if isinstance(m, FlexRoundLinear):
+                        continue
                 else:
                     self.weight_config[n]["data_type"] = "float"
                     if self.amp_dtype == torch.bfloat16:
