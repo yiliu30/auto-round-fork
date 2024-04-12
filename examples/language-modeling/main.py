@@ -12,6 +12,7 @@ torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 
 from transformers import set_seed
+import time
 
 import re
 
@@ -143,28 +144,32 @@ if __name__ == '__main__':
     if res == "0.3.0":
         use_eval_legacy = True
 
-    if isinstance(tasks, str):
-        tasks = tasks.split(',')
     if not use_eval_legacy:
         from eval import eval_model
     else:
         from eval_legacy import eval_model
+
+        if isinstance(tasks, str):
+            tasks = tasks.split(',')
         if isinstance(tasks, list):
             if "mmlu" in tasks:
-                tmp_tasks = tasks
-                tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
+                tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tasks]
             if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
-                tmp_tasks = tasks
-                tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
-            tasks = list(set(tasks))
+                # Handle "truthfulqa_mc1" and "truthfulqa_mc2" by including only "truthfulqa_mc"
+                # !! Keep task order
+                new_tasks = []
+                for task_name in tasks:
+                    if "truthfulqa_mc" in task_name:
+                        tmp_task_name = "truthfulqa_mc"
+                        if tmp_task_name not in new_tasks:
+                            new_tasks.append(tmp_task_name)
+                    else:
+                        new_tasks.append(task_name)
+                tasks = new_tasks
         if isinstance(args.tasks, str):
             tasks = ','.join(tasks)
+        print(f"Using legacy lm-eval, tasks are {tasks}.")
 
-    if 'fake' in args.deployment_device and not args.disable_eval:
-        if use_eval_legacy:
-            print("Using the legacy lm_eval(0.3.0)")
-        else:
-            print("Using the latest lm_eval(0.4.1)")
 
     model_name = args.model_name
     if model_name[-1] == "/":
@@ -229,14 +234,17 @@ if __name__ == '__main__':
             dtype = 'float32'
 
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
-    if args.eval_fp16_baseline:
-        if args.disable_low_gpu_mem_usage:
-            model = model.to(torch_device)
-        excel_name += "_fp16.xlsx"
-        eval_model(model_path=model_name, tasks=tasks, dtype=dtype, \
-                   eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
-                   device=torch_device, excel_file=excel_name)
-        exit()
+    timestamp_str = time.strftime("%Y%m%d-%H%M%S")
+    excel_name = f"___{timestamp_str}__{'_'.join(model_name.split('/'))}_{args.bits}_{args.group_size}_{args.iters}_leq_{AuotoRoundConfig.layer_equalization_transform}" + ".xlsx"
+    print(f"excel_name: {excel_name}", flush=True)
+    # if args.eval_fp16_baseline:
+    #     if args.disable_low_gpu_mem_usage:
+    #         model = model.to(torch_device)
+    #     excel_name += "_fp16.xlsx"
+    #     eval_model(model_path=model_name, tasks=tasks, dtype=dtype, \
+    #                eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
+    #                device=torch_device, excel_file=excel_name)
+    #     exit()
 
     if args.disable_low_gpu_mem_usage:
         model = model.to(torch_device)
@@ -270,9 +278,16 @@ if __name__ == '__main__':
         torch.cuda.empty_cache()
     
     # TODO: for temp evaluation
-    from ppl_eval import eval_wikitext2
-    eval_wikitext2(model=model, tokenizer=tokenizer)
-    exit(0)
+    from auto_round.autoround import global_config
+    if global_config.use_flexround:
+        from ppl_eval import eval_wikitext2
+        eval_wikitext2(model, tokenizer)
+        eval_model(model_path=None, tasks=tasks, dtype=dtype, limit=None,
+                eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
+                device=torch_device, excel_file=excel_name,
+                model_tokenizer_pairs=(model.to("cuda"), tokenizer))
+        exit(0)
+
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
     deployment_device = args.deployment_device.split(',')
