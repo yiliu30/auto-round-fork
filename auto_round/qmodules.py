@@ -21,6 +21,7 @@ class FlexRoundLinear(torch.nn.Module):
     def __init__(self,  orig_layer: torch.nn.Linear, enable_minmax_tuning=False, config: FlexRoundModuleConfig=None):
         assert enable_minmax_tuning is False, "`enable_minmax_tuning` is a placeholder only."
         super(FlexRoundLinear, self).__init__()
+        logger.info(f"Create flexRoundLinear with: {config}")
         self.config = config
         self._orig_layer = orig_layer
         if self.config.weight_config:

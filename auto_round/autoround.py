@@ -290,7 +290,15 @@ def wrapper_block(block, enable_minmax_tuning):
                 # self.group_size = self.orig_layer.group_size
                 # self.scale_dtype = self.orig_layer.scale_dtype
                 # self.sym = self.orig_layer.sym
-                weight_quantizer_config =  QuantizerConfig(n_bits=m.bits)
+                if m.group_size == -1:
+                    channel_wise = True
+                elif m.group_size == 1:
+                    # TODO WA
+                    logger.warning(f"Group size is 1, set channel_wise to False")
+                    channel_wise = False
+                else:
+                    raise NotImplementedError("Only support channel_wise or per channel quantization")
+                weight_quantizer_config =  QuantizerConfig(n_bits=m.bits, channel_wise=channel_wise)
                 flex_layer_config = FlexRoundModuleConfig(weight_config=weight_quantizer_config)
                 new_m = FlexRoundLinear(orig_layer=m, config=flex_layer_config)
                 logger.info(f"Set FlexRoundLieaner{n} to training mode.")

@@ -39,6 +39,8 @@ if __name__ == '__main__':
     parser.add_argument("--device", default="auto", type=str,
                         help="The device to be used for tuning. The default is set to auto/None,"
                              "allowing for automatic detection. Currently, device settings support CPU, GPU, and HPU.")
+    parser.add_argument("--dataset_name", default="NeelNanda/pile-10k", type=str,
+                        help="dataset name")
 
     parser.add_argument("--sym", action='store_true',
                         help=" sym quantization")
@@ -235,7 +237,8 @@ if __name__ == '__main__':
 
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
     timestamp_str = time.strftime("%Y%m%d-%H%M%S")
-    excel_name = f"___{timestamp_str}__{'_'.join(model_name.split('/'))}_{args.bits}_{args.group_size}_{args.iters}_leq_{AuotoRoundConfig.layer_equalization_transform}" + ".xlsx"
+    from auto_round.autoround import global_config
+    excel_name = f"___{timestamp_str}__{'_'.join(model_name.split('/'))}_{args.bits}_{args.group_size}_{args.iters}_flex_{global_config.use_flexround}" + ".xlsx"
     print(f"excel_name: {excel_name}", flush=True)
     # if args.eval_fp16_baseline:
     #     if args.disable_low_gpu_mem_usage:
@@ -250,8 +253,8 @@ if __name__ == '__main__':
         model = model.to(torch_device)
 
     round = AutoRound
-    if args.adam:
-        round = AutoAdamRound
+    # if args.adam:
+    #     round = AutoAdamRound
 
     weight_config = {}
     for n, m in model.named_modules():
@@ -266,6 +269,7 @@ if __name__ == '__main__':
                       seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input, device=device_str,
                       amp=not args.disable_amp, n_samples=args.n_samples,
+                      dataset=args.dataset_name,
                       low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config,
@@ -278,7 +282,7 @@ if __name__ == '__main__':
         torch.cuda.empty_cache()
     
     # TODO: for temp evaluation
-    from auto_round.autoround import global_config
+    
     if global_config.use_flexround:
         from ppl_eval import eval_wikitext2
         eval_wikitext2(model, tokenizer)
