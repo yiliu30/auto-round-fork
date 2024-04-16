@@ -138,7 +138,7 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
         <td><b>62.33</td>
     </tr>
     <tr>
-        <td rowspan="7">V2-7B</td>
+        <td rowspan="8">V2-7B</td>
         <td>FP16</td>
         <td>42.69</td>
         <td>73.90</td>
@@ -227,6 +227,21 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
         <td>74.12 </td>
         <td>40.19 </td>
         <td>56.62 </td>
+    </tr>
+    <tr>
+        <td>FlexRound</td>
+        <td>41.23 </td>
+        <td>72.00 </td>
+        <td>56.12 </td>
+        <td>68.19 </td>
+        <td>77.37 </td>
+        <td>25.46 </td>
+        <td>31.40 </td>
+        <td>76.76 </td>
+        <td>65.34 </td>
+        <td>75.88 </td>
+        <td>42.66 </td>
+        <td>57.49 </td>
     </tr>
     <tr>
         <td>Ours</td>
