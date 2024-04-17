@@ -902,7 +902,7 @@ class AutoRound(object):
                 cur_params = m.get_trainable_params()
                 logger.info(f"get {len(cur_params)} trainable params for {n}")
                 params += cur_params
-        logger.info(f"get {len(params)} trainable params for the block")
+        logger.info(f"Block get {len(params)} trainable params in total.")
         return params
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu"), block_ids=None):

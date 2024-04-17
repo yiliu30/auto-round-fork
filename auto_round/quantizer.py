@@ -309,7 +309,7 @@ class AdaRoundQuantizer(nn.Module):
 
         self.round_mode = round_mode
         self.alpha = None
-        self.soft_targets = False
+        self.soft_targets = True
 
         # params for sigmoid function
         self.gamma, self.zeta = -0.1, 1.1
@@ -331,6 +331,7 @@ class AdaRoundQuantizer(nn.Module):
             if self.soft_targets:
                 x_int = x_floor + self.get_soft_targets()
             else:
+                # !!! the bool tensor do not have grad
                 x_int = x_floor + (self.alpha >= 0).float()
         else:
             raise ValueError('Wrong rounding mode')
@@ -349,7 +350,7 @@ class AdaRoundQuantizer(nn.Module):
             print('Init alpha to be FP32')
             rest = (x / self.delta) - x_floor  # rest of rounding [0, 1)
             alpha = -torch.log((self.zeta - self.gamma) / (rest - self.gamma) - 1)  # => sigmoid(alpha) = rest
-            self.alpha = nn.Parameter(alpha)
+            self.alpha = nn.Parameter(alpha, requires_grad=True)
         else:
             raise NotImplementedError
 
