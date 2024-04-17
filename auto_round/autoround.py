@@ -51,8 +51,12 @@ if is_hpu_available:
 class GlobalConfig:
     use_autoround: bool = os.getenv("USE_AUTOROUND", "0") == "1"
     use_flexround: bool = os.getenv("USE_FLEXROUND", "0") == "1"
+    use_adaround: bool = os.getenv("USE_ADAROUND", "0") == "1"
 
 global_config = GlobalConfig()
+if global_config.use_adaround:
+    logger.warning(f"Force use_flexround to True when use_adaround is True")
+    global_config.use_flexround = True
 
 class WrapperLinear(torch.nn.Module):
     def __init__(self, orig_layer, enable_minmax_tuning=True):
@@ -299,6 +303,8 @@ def wrapper_block(block, enable_minmax_tuning):
                 else:
                     raise NotImplementedError("Only support channel_wise or per channel quantization")
                 weight_quantizer_config =  QuantizerConfig(n_bits=m.bits, channel_wise=channel_wise)
+                if global_config.use_adaround:
+                    weight_quantizer_config.use_ada = True
                 flex_layer_config = FlexRoundModuleConfig(weight_config=weight_quantizer_config)
                 new_m = FlexRoundLinear(orig_layer=m, config=flex_layer_config)
                 logger.info(f"Set FlexRoundLieaner{n} to training mode.")

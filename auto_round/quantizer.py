@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Union
 from dataclasses import dataclass
-
+from .utils import logger
 class StraightThrough(nn.Module):
     def __init__(self):
         super().__init__()
@@ -42,6 +42,7 @@ class QuantizerConfig:
     scale_method: str = 'minmax'
     leaf_param: bool = False
     prob: float = 1.0
+    use_ada: bool = False
     
     def to_dict(self):
         return {
@@ -54,6 +55,8 @@ class QuantizerConfig:
         }
 
 default_quantizer_config = QuantizerConfig()
+ada_default_quantizer_config = QuantizerConfig(use_ada=True)
+
 
 class WUniformAffineQuantizer(nn.Module):
     """
@@ -128,7 +131,7 @@ class WUniformAffineQuantizer(nn.Module):
         #             self.delta4 = torch.nn.Parameter(torch.zeros_like(x[0, :, 0, 0]).unsqueeze(0).unsqueeze(-1).unsqueeze(-1))
         #     self.inited = True
     @classmethod
-    def init_from_tensor(cls, x, config: QuantizerConfig):
+    def init_from_tensor(cls, x, config: QuantizerConfig, only_delta=False):
         quantizer = cls(**config.to_dict())
         if quantizer.leaf_param:
             quantizer.delta, quantizer.zero_point = quantizer.init_quantization_scale(x.clone().detach(), quantizer.channel_wise)
@@ -137,6 +140,9 @@ class WUniformAffineQuantizer(nn.Module):
             # TODO: is ok?
             delta = torch.tensor(delta, device=x.device, dtype=x.dtype)
             quantizer.delta = delta
+            if only_delta:
+                logger.warning("Only delta is initialized")
+                return quantizer
             quantizer.delta1 = torch.nn.Parameter(torch.log(delta.clone().detach())) 
             quantizer.delta2 = torch.nn.Parameter(torch.zeros_like(x)) 
             if x.dim() >= 4:
@@ -272,4 +278,91 @@ class WUniformAffineQuantizer(nn.Module):
     @classmethod
     def create_quantizer_from_config(cls, config: QuantizerConfig):
         return cls(**config.to_dict())
+
+
+# =============================================================================
+# Adaptive round
+# Tailor the original `AdaRoundQuantizer` for adaptive round only
+# =============================================================================
+
+class AdaRoundQuantizer(nn.Module):
+    """
+    Adaptive Rounding Quantizer, used to optimize the rounding policy
+    by reconstructing the intermediate output.
+    Based on
+     Up or Down? Adaptive Rounding for Post-Training Quantization: https://arxiv.org/abs/2004.10568
+
+    :param uaq: WUniformAffineQuantizer, used to initialize quantization parameters in this quantizer
+    :param round_mode: controls the forward pass in this quantizer
+    :param weight_tensor: initialize alpha
+    """
+
+    def __init__(self, uaq: WUniformAffineQuantizer, weight_tensor: torch.Tensor, round_mode='learned_hard_sigmoid'):
+        super(AdaRoundQuantizer, self).__init__()
+        assert round_mode == "learned_hard_sigmoid", "Only support learned_hard_sigmoid"
+        # copying all attributes from WUniformAffineQuantizer
+        self.n_bits = uaq.n_bits
+        self.sym = uaq.sym
+        self.delta = uaq.delta
+        self.zero_point = uaq.zero_point
+        self.n_levels = uaq.n_levels
+
+        self.round_mode = round_mode
+        self.alpha = None
+        self.soft_targets = False
+
+        # params for sigmoid function
+        self.gamma, self.zeta = -0.1, 1.1
+        self.beta = 2/3
+        self.init_alpha(x=weight_tensor.clone())
+
+    def forward(self, x):
+        # if self.round_mode == 'nearest':
+        #     x_int = torch.round(x / self.delta)
+        # elif self.round_mode == 'nearest_ste':
+        #     x_int = round_ste(x / self.delta)
+        # elif self.round_mode == 'stochastic':
+        #     x_floor = torch.floor(x / self.delta)
+        #     rest = (x / self.delta) - x_floor  # rest of rounding
+        #     x_int = x_floor + torch.bernoulli(rest)
+        #     print('Draw stochastic sample')
+        if self.round_mode == 'learned_hard_sigmoid':
+            x_floor = torch.floor(x / self.delta)
+            if self.soft_targets:
+                x_int = x_floor + self.get_soft_targets()
+            else:
+                x_int = x_floor + (self.alpha >= 0).float()
+        else:
+            raise ValueError('Wrong rounding mode')
+
+        x_quant = torch.clamp(x_int, - 2 ** (self.n_bits - 1), 2 ** (self.n_bits - 1) - 1)
+        x_float_q = x_quant * self.delta
+
+        return x_float_q
+
+    def get_soft_targets(self):
+        return torch.clamp(torch.sigmoid(self.alpha) * (self.zeta - self.gamma) + self.gamma, 0, 1)
+
+    def init_alpha(self, x: torch.Tensor):
+        x_floor = torch.floor(x / self.delta)
+        if self.round_mode == 'learned_hard_sigmoid':
+            print('Init alpha to be FP32')
+            rest = (x / self.delta) - x_floor  # rest of rounding [0, 1)
+            alpha = -torch.log((self.zeta - self.gamma) / (rest - self.gamma) - 1)  # => sigmoid(alpha) = rest
+            self.alpha = nn.Parameter(alpha)
+        else:
+            raise NotImplementedError
+
+    @torch.jit.export
+    def extra_repr(self):
+        return 'bit={}'.format(self.n_bits)
+    
+    @classmethod
+    def init_from_tensor(cls, x, config: QuantizerConfig):
+        weight_uniform_affine_quantizer = WUniformAffineQuantizer.init_from_tensor(x, config, only_delta=True)
+        ada_quantizer = cls(uaq=weight_uniform_affine_quantizer, weight_tensor=x)
+        return ada_quantizer
+
+    def get_trainable_params(self):
+        return [self.alpha]
 

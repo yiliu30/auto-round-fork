@@ -6,7 +6,8 @@ import torch.nn.functional as F
 import logging 
 
 logger = logging.getLogger(__name__)
-from .quantizer import WUniformAffineQuantizer,QuantizerConfig, default_quantizer_config
+from .quantizer import WUniformAffineQuantizer,QuantizerConfig, default_quantizer_config, AdaRoundQuantizer, ada_default_quantizer_config
+
 
 @dataclass
 class FlexRoundModuleConfig:
@@ -25,7 +26,10 @@ class FlexRoundLinear(torch.nn.Module):
         self.config = config
         self._orig_layer = orig_layer
         if self.config.weight_config:
-            self.weight_quantizer = WUniformAffineQuantizer.init_from_tensor(self._orig_layer.weight, self.config.weight_config)
+            if self.config.weight_config.use_ada:
+                self.weight_quantizer = AdaRoundQuantizer.init_from_tensor(self._orig_layer.weight, self.config.weight_config)
+            else:
+                self.weight_quantizer = WUniformAffineQuantizer.init_from_tensor(self._orig_layer.weight, self.config.weight_config)
         self.inference_mode = False
         
     def forward(self, input: torch.Tensor):
