@@ -1026,7 +1026,7 @@ class AutoRound(object):
 
                 self.scale_loss_and_backward(scaler, loss)
                 if i % 20 == 0:
-                    logger.info(f"iter {i}, loss: {total_loss:.6f}")
+                    logger.info(f"iter {i}, loss: {total_loss:.10f}")
                     logger.info(f"iter {i}, lr is : {lr_schedule.get_lr()}")
                 
 
