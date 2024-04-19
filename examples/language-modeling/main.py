@@ -17,6 +17,8 @@ import time
 import re
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+from auto_round.utils import show_commit
+show_commit()
 
 if __name__ == '__main__':
 
@@ -238,7 +240,7 @@ if __name__ == '__main__':
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
     timestamp_str = time.strftime("%Y%m%d-%H%M%S")
     from auto_round.autoround import global_config
-    excel_name = f"___{timestamp_str}__{'_'.join(model_name.split('/'))}_{args.bits}_{args.group_size}_{args.iters}_flex_{global_config.use_flexround}" + ".xlsx"
+    excel_name = f"___{timestamp_str}__{'_'.join(model_name.split('/'))}_{args.bits}_{args.group_size}_{args.iters}_flex_{global_config.use_flexround}_disable_amp_{args.disable_amp}" + ".xlsx"
     print(f"excel_name: {excel_name}", flush=True)
     # if args.eval_fp16_baseline:
     #     if args.disable_low_gpu_mem_usage:
@@ -286,6 +288,9 @@ if __name__ == '__main__':
     if global_config.use_flexround:
         from ppl_eval import eval_wikitext2
         eval_wikitext2(model, tokenizer)
+        if global_config.only_ppl:
+            print("Only ppl evaluation is enabled, exiting.")
+            exit(0)
         eval_model(model_path=None, tasks=tasks, dtype=dtype, limit=None,
                 eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
                 device=torch_device, excel_file=excel_name,

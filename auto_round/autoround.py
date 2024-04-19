@@ -52,6 +52,7 @@ class GlobalConfig:
     use_autoround: bool = os.getenv("USE_AUTOROUND", "0") == "1"
     use_flexround: bool = os.getenv("USE_FLEXROUND", "0") == "1"
     use_adaround: bool = os.getenv("USE_ADAROUND", "0") == "1"
+    only_ppl: bool = os.getenv("ONLY_PPL", "0") == "1"
 
 global_config = GlobalConfig()
 if global_config.use_adaround:

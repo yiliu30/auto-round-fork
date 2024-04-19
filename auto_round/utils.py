@@ -601,3 +601,18 @@ class CpuInfo(object):
                 for line in proc.stdout:
                     return int(line.decode("utf-8", errors="ignore").strip())
         return 0
+
+
+
+def show_commit():
+    import subprocess
+
+    # Get the current branch
+    branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]).decode("utf-8").strip()
+
+    # Get the latest commit hash
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
+    
+    print(f"Current branch: {branch}")
+    print(f"Latest commit: {commit}")
+    return f"current_branch:{branch}_latest_commit:_{commit}"
