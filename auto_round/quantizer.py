@@ -153,7 +153,7 @@ class WUniformAffineQuantizer(nn.Module):
                 quantizer.delta4 = torch.nn.Parameter(torch.zeros_like(x[0, :, 0, 0]).unsqueeze(0).unsqueeze(-1).unsqueeze(-1))
         return quantizer
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, infer_mode = False):
         # TODO: current we only support Linear
         assert x.dim() < 4, f"not support dim > 4, but got tensor with shape: {x.shape}"
         # if self.inited is False:
@@ -316,7 +316,7 @@ class AdaRoundQuantizer(nn.Module):
         self.beta = 2/3
         self.init_alpha(x=weight_tensor.clone())
 
-    def forward(self, x):
+    def forward(self, x, infer_mode = False):
         # if self.round_mode == 'nearest':
         #     x_int = torch.round(x / self.delta)
         # elif self.round_mode == 'nearest_ste':
@@ -329,7 +329,12 @@ class AdaRoundQuantizer(nn.Module):
         if self.round_mode == 'learned_hard_sigmoid':
             x_floor = torch.floor(x / self.delta)
             if self.soft_targets:
-                x_int = x_floor + self.get_soft_targets()
+                soft_target = self.get_soft_targets()
+                # Doble check
+                if infer_mode:
+                    x_int = x_floor + (self.alpha >= 0).float()
+                else:
+                    x_int = x_floor + soft_target
             else:
                 # !!! the bool tensor do not have grad
                 x_int = x_floor + (self.alpha >= 0).float()
@@ -342,6 +347,13 @@ class AdaRoundQuantizer(nn.Module):
         return x_float_q
 
     def get_soft_targets(self):
+        # 0 ~ 1
+        # self.gamma, self.zeta = -0.1, 1.1
+        # 1.2
+        # 0 ~ 1.2
+        # -0.1 ~  1.1
+        # 0 ~ 1
+        
         return torch.clamp(torch.sigmoid(self.alpha) * (self.zeta - self.gamma) + self.gamma, 0, 1)
 
     def init_alpha(self, x: torch.Tensor):

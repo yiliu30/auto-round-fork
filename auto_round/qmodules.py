@@ -49,7 +49,7 @@ class FlexRoundLinear(torch.nn.Module):
         # * Note it not use the best deltas
         
         with torch.no_grad():
-            final_weight = self.weight_quantizer(self._orig_layer.weight)
+            final_weight = self.weight_quantizer(self._orig_layer.weight, infer_mode=True)
             self._orig_layer.weight.data.copy_(final_weight)
             self._orig_layer.weight.requires_grad_ = False
             self.inference_mode = True
