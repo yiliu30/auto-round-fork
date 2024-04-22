@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from typing import Union
 from dataclasses import dataclass
 from .utils import logger
+import os
 class StraightThrough(nn.Module):
     def __init__(self):
         super().__init__()
@@ -32,6 +33,47 @@ def lp_loss(pred, tgt, p=2.0, reduction='none'):
         return (pred - tgt).abs().pow(p).mean()
 
 
+
+
+def half_hard_tensor(tensor):
+    import torch
+    from sklearn.cluster import KMeans
+
+    # Generate a random Torch tensor with multiple dimensions between 0 and 1
+    # tensor = torch.rand(3, 4, 5)
+
+    # Flatten the tensor to make it suitable for KMeans
+    flattened_data = tensor.view(-1, 1).numpy()
+
+    # Perform KMeans clustering
+    kmeans = KMeans(n_clusters=4)
+    kmeans.fit(flattened_data)
+
+    # Get centroids
+    centroids = torch.tensor(kmeans.cluster_centers_.flatten())
+
+    logger.info(f"centroids: {centroids}")
+    # Expand centroids to match the shape of the flattened_data for broadcasting
+    expanded_centroids = centroids.view(1, -1)
+
+    # Calculate distances between each value in flattened_data and centroids
+    distances = torch.abs(torch.from_numpy(flattened_data) - expanded_centroids)
+
+    # Find the index of the nearest centroid for each value
+    nearest_indices = torch.argmin(distances, dim=1)
+
+    # Gather nearest centroids using the nearest_indices
+    new_flattened_data = centroids[nearest_indices]
+
+    # Reshape the new flattened tensor to the original shape
+    new_tensor = new_flattened_data.view(tensor.shape)
+    return new_tensor
+
+def rounder_tensor(tensor):
+    # Find representative values
+    device = tensor.device
+    new_tensor = half_hard_tensor(tensor.detach().cpu())
+    return new_tensor.to(device)
 
 @dataclass
 class QuantizerConfig:
@@ -332,7 +374,12 @@ class AdaRoundQuantizer(nn.Module):
                 soft_target = self.get_soft_targets()
                 # Doble check
                 if infer_mode:
-                    x_int = x_floor + (self.alpha >= 0).float()
+                    if os.environ.get('HALF_HARD', '0') == '1':
+                        logger.warning('Use half hard target')
+                        half_hard_target = rounder_tensor(self.alpha)
+                        x_int = x_floor + (half_hard_target >= 0).float()
+                    else:
+                        x_int = x_floor + (self.alpha >= 0).float()
                 else:
                     x_int = x_floor + soft_target
             else:
