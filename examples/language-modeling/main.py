@@ -284,22 +284,27 @@ if __name__ == '__main__':
         torch.cuda.empty_cache()
     
     # TODO: for temp evaluation
-    
+    eval_wikitext2(model, tokenizer)
+    exit(0)
     if global_config.use_flexround:
         from ppl_eval import eval_wikitext2
         eval_wikitext2(model, tokenizer)
         if global_config.only_ppl:
             print("Only ppl evaluation is enabled, exiting.")
             exit(0)
-        eval_model(model_path=None, tasks=tasks, dtype=dtype, limit=None,
-                eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
-                device=torch_device, excel_file=excel_name,
-                model_tokenizer_pairs=(model.to("cuda"), tokenizer))
-        exit(0)
+        # eval_model(model_path=None, tasks=tasks, dtype=dtype, limit=None,
+        #         eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
+        #         device=torch_device, excel_file=excel_name,
+        #         model_tokenizer_pairs=(model.to("cuda"), tokenizer))
+        deployment_device = "fake"
+        print("Force deployment_device to be 'fake' due to use_flexround is enabled.")
+        output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-flex_round{global_config.use_adaround}-ada_round-{global_config.use_adaround}-w{args.bits}g{args.group_size}-qdq"
+        print(f"save model to {output_dir}")
+    else:
 
-    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
-    output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
-    deployment_device = args.deployment_device.split(',')
+        export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
+        output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
+        deployment_device = args.deployment_device.split(',')
     if 'gpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=False)
     if "cpu" in deployment_device:
