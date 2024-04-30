@@ -7,7 +7,7 @@ from auto_round.quantizer import WUniformAffineQuantizer
 import pytest
 # random.seed(0)
 # torch.manual_seed(0)
-
+import math
 class TestFlexRoundLinear:
     
     
@@ -30,9 +30,42 @@ class TestFlexRoundLinear:
         return ToyModel(in_features=in_features)
     
     def test_quantizer(self):
-        tensor = torch.randn(128, 512)
+        tensor: torch.Tensor = torch.randn(128, 512) # out_C, in_C
         quantizer = WUniformAffineQuantizer.init_from_tensor(tensor, default_quantizer_config)
         assert len(list(quantizer.parameters())) == 3, "Should have 3 parameters"
+
+    def test_flex_linear_group_size_minus_one(self):
+        in_features = 32
+        out_features = 64
+        quantizer_config = QuantizerConfig(n_bits=8, channel_wise=True)
+        float_linear, flex_round_linear = self._create_flex_round_linear(in_features=in_features, out_features=out_features, quantizer_config=quantizer_config)
+        trainable_params = flex_round_linear.get_trainable_params()
+        assert len(trainable_params) == 3
+        assert trainable_params[0].numel() == out_features # s1
+        assert trainable_params[1].shape == float_linear.weight.shape # s2
+        assert len(trainable_params[2].shape) == len(float_linear.weight.shape) # s3 [out_feature, 1]
+        assert trainable_params[2].shape[0] == out_features # s3
+
+
+    @pytest.mark.parametrize("gs", [64, 128, 512])
+    @pytest.mark.parametrize("in_features", [512, 500])
+    def test_flex_linear_group_size(self, gs, in_features):
+        in_features = in_features
+        out_features = 1024
+        group_size = gs
+        quantizer_config = QuantizerConfig(n_bits=8, group_size=group_size)
+        float_linear, flex_round_linear = self._create_flex_round_linear(in_features=in_features, out_features=out_features, quantizer_config=quantizer_config)
+        trainable_params = flex_round_linear.get_trainable_params()
+        assert len(trainable_params) == 3
+        
+        pad_len = math.ceil(in_features / group_size) * group_size - in_features
+        orig_pad_tensor_shape = out_features, in_features + pad_len
+        new_shape = orig_pad_tensor_shape[0] * orig_pad_tensor_shape[1] // group_size, group_size
+        assert trainable_params[0].numel() == new_shape[0]
+        assert trainable_params[1].shape == new_shape# s2
+        assert len(trainable_params[2].shape) == len(float_linear.weight.shape) # s3 [out_feature, 1]
+        assert trainable_params[2].shape[0] == new_shape[0] # s3
+        
     
     def test_all(self):
         in_features = 32

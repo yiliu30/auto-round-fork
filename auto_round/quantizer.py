@@ -8,6 +8,8 @@ from typing import Union
 from dataclasses import dataclass
 from .utils import logger
 import os
+import math
+
 class StraightThrough(nn.Module):
     def __init__(self):
         super().__init__()
@@ -85,6 +87,7 @@ class QuantizerConfig:
     leaf_param: bool = False
     prob: float = 1.0
     use_ada: bool = False
+    group_size: int  = 0
     
     def to_dict(self):
         return {
@@ -93,7 +96,8 @@ class QuantizerConfig:
             'channel_wise': self.channel_wise,
             'scale_method': self.scale_method,
             'leaf_param': self.leaf_param,
-            'prob': self.prob
+            'prob': self.prob,
+            'group_size': self.group_size,
         }
 
 default_quantizer_config = QuantizerConfig()
@@ -116,7 +120,9 @@ class WUniformAffineQuantizer(nn.Module):
 
     def __init__(self, n_bits: int = 8, symmetric: bool = False, channel_wise: bool = False,
                  scale_method: str = 'minmax',
-                 leaf_param: bool = False, prob: float = 1.0):
+                 leaf_param: bool = False, prob: float = 1.0,
+                 group_size: int = 0,
+                 ):
         super(WUniformAffineQuantizer, self).__init__()
         self.sym = symmetric
         assert 2 <= n_bits <= 8, 'bitwidth not supported'
@@ -142,6 +148,14 @@ class WUniformAffineQuantizer(nn.Module):
         '''do like dropout'''
         self.prob = prob
         self.is_training = False
+        
+        self.orig_shape = None
+        self.group_size = group_size
+        if self.group_size == -1:
+            assert self.channel_wise is True, "channel_wise should be True when group size is -1"
+        if self.group_size != 0:
+            logger.warning("group size is not 0, force channel wise")
+            self.channel_wise = True
 
     def set_inited(self, inited: bool = True):  
         self.inited = inited
@@ -172,9 +186,55 @@ class WUniformAffineQuantizer(nn.Module):
         #         if x.dim() >= 4:
         #             self.delta4 = torch.nn.Parameter(torch.zeros_like(x[0, :, 0, 0]).unsqueeze(0).unsqueeze(-1).unsqueeze(-1))
         #     self.inited = True
+    
+    def reshape_tensor(self, t: torch.Tensor):
+        group_size = self.group_size
+        # t is the weight whoes shape is [out_channels, in_channels]
+        # group_size, 128, 64, -1(use original shape)
+        # dealta's shape is out_channels?
+        orig_shape = t.shape
+        assert len(orig_shape) == 2, f"shape should be 2, but got {len(orig_shape)}"
+        out_c, in_c = orig_shape
+        # case 1:
+        if group_size == -1 or group_size == 0:
+            return t
+        # case 2:
+        if in_c % group_size == 0:
+            new_t = t.reshape(-1, group_size)
+            return new_t 
+        else:
+            # case 3:
+            pad_len = math.ceil(in_c / group_size) * group_size - in_c
+            pad_tensor = torch.zeros(out_c, pad_len, device=t.device, dtype=t.dtype)
+            new_tensor = torch.cat([t, pad_tensor], dim=1)
+            new_t = new_tensor.reshape(-1, group_size)
+            return new_t
+    
+    def reshape_tensoe_back(self, t: torch.Tensor):
+        group_size = self.group_size
+        orig_shape = self.orig_shape
+        if group_size == -1 or group_size == 0:
+            return t
+        out_c, in_c = orig_shape
+        # case 2:
+        if in_c % group_size == 0:
+            orig_t = t.reshape(orig_shape)
+            return orig_t
+        else:
+            # case 3:
+            pad_len = math.ceil(in_c / group_size) * group_size - in_c
+            orig_pad_tensor_shape = out_c, in_c + pad_len
+            orig_pad_tensor = t.reshape(orig_pad_tensor_shape)
+            orig_tensor = orig_pad_tensor[:, :in_c]
+            return orig_tensor
+
     @classmethod
     def init_from_tensor(cls, x, config: QuantizerConfig, only_delta=False):
         quantizer = cls(**config.to_dict())
+        # pre-process group size
+        quantizer.orig_shape = x.shape
+        x = quantizer.reshape_tensor(x)
+        
         if quantizer.leaf_param:
             quantizer.delta, quantizer.zero_point = quantizer.init_quantization_scale(x.clone().detach(), quantizer.channel_wise)
         else:
@@ -214,6 +274,8 @@ class WUniformAffineQuantizer(nn.Module):
         #             self.delta4 = torch.nn.Parameter(torch.zeros_like(x[0, :, 0, 0]).unsqueeze(0).unsqueeze(-1).unsqueeze(-1))
         #     self.inited = True
         # x_int = round_ste(x / (self.delta1 + self.delta2 + self.delta3 + self.delta4).exp()) if x.dim() >= 4 else round_ste(x / (self.delta1 + self.delta2 + self.delta3).exp())
+        # reshape tensor
+        x = self.reshape_tensor(x)
         delta_sum = (self.delta1 + self.delta2 + self.delta3)
         delta_sum_exp = delta_sum.exp()
         x_int = round_ste(x / delta_sum_exp)
@@ -225,6 +287,8 @@ class WUniformAffineQuantizer(nn.Module):
             x_ans = torch.where(torch.rand_like(x) < self.prob, x_dequant, x)
         else:
             x_ans = x_dequant
+        # reshape tensor back
+        x_ans = self.reshape_tensoe_back(x_ans)
         return x_ans
     
     def get_trainable_params(self):
