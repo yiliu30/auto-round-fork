@@ -191,19 +191,20 @@ class WUniformAffineQuantizer(nn.Module):
         group_size = self.group_size
         # t is the weight whoes shape is [out_channels, in_channels]
         # group_size, 128, 64, -1(use original shape)
-        # dealta's shape is out_channels?
+        # dealta's shape is out_channels
         orig_shape = t.shape
         assert len(orig_shape) == 2, f"shape should be 2, but got {len(orig_shape)}"
         out_c, in_c = orig_shape
-        # case 1:
+        # case 1: channel-wise or per-tensor
         if group_size == -1 or group_size == 0:
             return t
-        # case 2:
+        # case 2: by group
+        # 2.1
         if in_c % group_size == 0:
             new_t = t.reshape(-1, group_size)
             return new_t 
         else:
-            # case 3:
+            # 2.2
             pad_len = math.ceil(in_c / group_size) * group_size - in_c
             pad_tensor = torch.zeros(out_c, pad_len, device=t.device, dtype=t.dtype)
             new_tensor = torch.cat([t, pad_tensor], dim=1)
@@ -216,12 +217,12 @@ class WUniformAffineQuantizer(nn.Module):
         if group_size == -1 or group_size == 0:
             return t
         out_c, in_c = orig_shape
-        # case 2:
+        # 2.1
         if in_c % group_size == 0:
             orig_t = t.reshape(orig_shape)
             return orig_t
         else:
-            # case 3:
+            # 2.2
             pad_len = math.ceil(in_c / group_size) * group_size - in_c
             orig_pad_tensor_shape = out_c, in_c + pad_len
             orig_pad_tensor = t.reshape(orig_pad_tensor_shape)

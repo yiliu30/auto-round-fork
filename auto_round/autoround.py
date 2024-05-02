@@ -302,8 +302,9 @@ def wrapper_block(block, enable_minmax_tuning):
                     logger.warning(f"Group size is 1, set channel_wise to False")
                     channel_wise = False
                 else:
-                    raise NotImplementedError("Only support channel_wise or per channel quantization")
-                weight_quantizer_config =  QuantizerConfig(n_bits=m.bits, channel_wise=channel_wise)
+                    channel_wise = True
+                    logger.warning(f"Group size is {m.group_size}, set channel_wise to True")
+                weight_quantizer_config =  QuantizerConfig(n_bits=m.bits, channel_wise=channel_wise, group_size=m.group_size)
                 if global_config.use_adaround:
                     weight_quantizer_config.use_ada = True
                 flex_layer_config = FlexRoundModuleConfig(weight_config=weight_quantizer_config)
