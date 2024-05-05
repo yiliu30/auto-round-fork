@@ -211,7 +211,7 @@ class WUniformAffineQuantizer(nn.Module):
             new_t = new_tensor.reshape(-1, group_size)
             return new_t
     
-    def reshape_tensoe_back(self, t: torch.Tensor):
+    def reshape_tensor_back(self, t: torch.Tensor):
         group_size = self.group_size
         orig_shape = self.orig_shape
         if group_size == -1 or group_size == 0:
@@ -289,7 +289,7 @@ class WUniformAffineQuantizer(nn.Module):
         else:
             x_ans = x_dequant
         # reshape tensor back
-        x_ans = self.reshape_tensoe_back(x_ans)
+        x_ans = self.reshape_tensor_back(x_ans)
         return x_ans
     
     def get_trainable_params(self):
@@ -392,7 +392,7 @@ class WUniformAffineQuantizer(nn.Module):
 # Tailor the original `AdaRoundQuantizer` for adaptive round only
 # =============================================================================
 
-class AdaRoundQuantizer(nn.Module):
+class AdaRoundQuantizer(WUniformAffineQuantizer):
     """
     Adaptive Rounding Quantizer, used to optimize the rounding policy
     by reconstructing the intermediate output.
@@ -405,7 +405,7 @@ class AdaRoundQuantizer(nn.Module):
     """
 
     def __init__(self, uaq: WUniformAffineQuantizer, weight_tensor: torch.Tensor, round_mode='learned_hard_sigmoid'):
-        super(AdaRoundQuantizer, self).__init__()
+        super().__init__()
         assert round_mode == "learned_hard_sigmoid", "Only support learned_hard_sigmoid"
         # copying all attributes from WUniformAffineQuantizer
         self.n_bits = uaq.n_bits
@@ -413,6 +413,9 @@ class AdaRoundQuantizer(nn.Module):
         self.delta = uaq.delta
         self.zero_point = uaq.zero_point
         self.n_levels = uaq.n_levels
+        
+        self.group_size = uaq.group_size
+        self.orig_shape = weight_tensor.shape
 
         self.round_mode = round_mode
         self.alpha = None
@@ -424,6 +427,7 @@ class AdaRoundQuantizer(nn.Module):
         self.init_alpha(x=weight_tensor.clone())
 
     def forward(self, x, infer_mode = False):
+        x = self.reshape_tensor(x)
         # if self.round_mode == 'nearest':
         #     x_int = torch.round(x / self.delta)
         # elif self.round_mode == 'nearest_ste':
@@ -455,7 +459,7 @@ class AdaRoundQuantizer(nn.Module):
 
         x_quant = torch.clamp(x_int, - 2 ** (self.n_bits - 1), 2 ** (self.n_bits - 1) - 1)
         x_float_q = x_quant * self.delta
-
+        x_float_q = self.reshape_tensor_back(x_float_q)
         return x_float_q
 
     def get_soft_targets(self):
@@ -469,6 +473,7 @@ class AdaRoundQuantizer(nn.Module):
         return torch.clamp(torch.sigmoid(self.alpha) * (self.zeta - self.gamma) + self.gamma, 0, 1)
 
     def init_alpha(self, x: torch.Tensor):
+        x = self.reshape_tensor(x)
         x_floor = torch.floor(x / self.delta)
         if self.round_mode == 'learned_hard_sigmoid':
             print('Init alpha to be FP32')
