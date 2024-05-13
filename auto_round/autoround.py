@@ -38,6 +38,7 @@ from .utils import (
     quant_weight,
     sampling_inputs,
     set_module,
+    dump_elapsed_time,
 )
 
 from .qmodules import FlexRoundLinear, FlexRoundModuleConfig, default_quantizer_config, QuantizerConfig
@@ -715,7 +716,7 @@ class AutoRound(object):
             )
             output.append(tmp_output)
         output = torch.cat(output, dim=batch_dim)
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
         return output
 
     @torch.no_grad()
@@ -907,6 +908,7 @@ class AutoRound(object):
         logger.info(f"Block get {len(params)} trainable params in total.")
         return params
 
+    @dump_elapsed_time("Quant per-block")
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu"), block_ids=None):
         """Quantize the weights of a given block of the model.
 
@@ -1092,14 +1094,19 @@ class AutoRound(object):
         None
         """
         q_input = None
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
         for n, m in model.named_parameters():
             m.requires_grad_(False)
         input_ids = inputs["input_ids"]
         inputs.pop("input_ids", None)
         input_others = inputs
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
+        MAX_NUM_BLOCKS = int(os.getenv("MAX_NUM_BLOCKS", 1000))
+        logger.info(f"MAX_NUM_BLOCKS {MAX_NUM_BLOCKS} blocks")
         for i in range(0, len(block_names), n_blocks):
+            if i >= MAX_NUM_BLOCKS:
+                logger.warning(f"quantize {MAX_NUM_BLOCKS} blocks, early exist !!!!!!!!!!!")
+                exit(0)
             if n_blocks == 1:
                 n = block_names[i]
                 logger.info(f"quantizing block {i + 1}/{len(block_names)}, {n}")
@@ -1121,7 +1128,7 @@ class AutoRound(object):
                 block_ids=i + 1,
             )
             m.to("cpu")
-            torch.cuda.empty_cache()
+            # torch.cuda.empty_cache()
 
         del q_input
         del input_ids
