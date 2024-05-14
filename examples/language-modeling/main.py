@@ -237,8 +237,12 @@ if __name__ == '__main__':
             pt_dtype = torch.float32
             dtype = 'float32'
 
+    output_dir = args.output_dir
+    print(f"output_dir: {output_dir}", flush=True)
+    
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
-    timestamp_str = time.strftime("%Y%m%d-%H%M%S")
+    import random
+    timestamp_str = time.strftime("%Y%m%d-%H%M%S") + str(random.randint(0, 1000))
     from auto_round.autoround import global_config
     excel_name = f"___{timestamp_str}__{'_'.join(model_name.split('/'))}_{args.bits}_{args.group_size}_{args.iters}_flex_{global_config.use_flexround}_disable_amp_{args.disable_amp}" + ".xlsx"
     print(f"excel_name: {excel_name}", flush=True)
@@ -289,14 +293,11 @@ if __name__ == '__main__':
         if global_config.only_ppl:
             print("Only ppl evaluation is enabled, exiting.")
             exit(0)
-        eval_model(model_path=None, tasks=tasks, dtype=dtype, limit=None,
-                eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
-                device=torch_device, excel_file=excel_name,
-                model_tokenizer_pairs=(model.to("cuda"), tokenizer))
-        exit(0)
+
+        
         deployment_device = "fake"
         print("Force deployment_device to be 'fake' due to use_flexround is enabled.")
-        output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-flex_round{global_config.use_adaround}-ada_round-{global_config.use_adaround}-w{args.bits}g{args.group_size}-qdq"
+        output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-{timestamp_str}-flex_round{global_config.use_adaround}-ada_round-{global_config.use_adaround}-w{args.bits}g{args.group_size}-qdq"
         print(f"save model to {output_dir}")
     else:
 
@@ -307,15 +308,24 @@ if __name__ == '__main__':
         autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=False)
     if "cpu" in deployment_device:
         autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=False)
-    if "fake" in deployment_device:
-        model = model.to("cpu")
-        model.save_pretrained(output_dir)
-        tokenizer.save_pretrained(output_dir)
+    
+    try:
+        if "fake" in deployment_device:
+            model = model.to("cpu")
+            model.save_pretrained(output_dir)
+            tokenizer.save_pretrained(output_dir)
 
-    if not args.disable_eval and "fake" in deployment_device:  ##support autogptq real eval later
-        excel_name = f"{output_dir}_result.xlsx"
-        output_dir += "/"
-        print(excel_name, flush=True)
-        eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
-                   eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
-                   device=torch_device, excel_file=excel_name)
+        if not args.disable_eval and "fake" in deployment_device:  ##support autogptq real eval later
+            excel_name = f"{output_dir}_{timestamp_str}_result.xlsx"
+            output_dir += "/"
+            print(excel_name, flush=True)
+            eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
+                    eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
+                    device=torch_device, excel_file=excel_name)
+    except Exception as e:
+        print(f"Error in save model: {e}")
+        torch.cuda.empty_cache()
+        eval_model(model_path=None, tasks=tasks, dtype=dtype, limit=None,
+                eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
+                device=torch_device, excel_file=excel_name,
+                model_tokenizer_pairs=(model.to("cuda"), tokenizer))
