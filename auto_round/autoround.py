@@ -54,6 +54,7 @@ class GlobalConfig:
     use_flexround: bool = os.getenv("USE_FLEXROUND", "0") == "1"
     use_adaround: bool = os.getenv("USE_ADAROUND", "0") == "1"
     only_ppl: bool = os.getenv("ONLY_PPL", "0") == "1"
+    save_checkpoint: bool = os.getenv("SAVE_CHECKPOINT", "0") == "1"
 
 global_config = GlobalConfig()
 if global_config.use_adaround:
@@ -543,6 +544,28 @@ class AutoRound(object):
         self.optimizer = self.get_optimizer(None)
         self.check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
+        self._pre_quantized_block_num = 0
+        self._tmp_prefix = None
+        self._quant_info_file_name = "quant_info.json"
+        self._post_init()
+        
+    def _post_init(self):
+        import time
+        import random
+        import json
+        quant_info_dir = os.environ.get("QUANT_INFO_DIR", None)
+        from pathlib import Path
+        if quant_info_dir is not None:
+            quant_info_file_path = Path(quant_info_dir) / self._quant_info_file_name
+            with open(quant_info_file_path, "r") as f:
+                quant_info = json.load(f)
+                self._pre_quantized_block_num = quant_info['pre_quantized_block_num']
+                logger.info(f"!!!!!!! pre_quantized_block: {self._pre_quantized_block_num}")
+            self._tmp_prefix = quant_info_dir
+            self._quant_info_file_path = quant_info_file_path
+            logger.info(f"!!!!!!! prefix: {self._tmp_prefix}")
+            logger.info(f"!!!!!!  quant info path: {self._quant_info_file_path}")
+
 
     def get_optimizer(self, optimizer):
         """Returns the specified optimizer. In SignRound, we fix the optimizer.
@@ -909,7 +932,7 @@ class AutoRound(object):
         return params
 
     @dump_elapsed_time("Quant per-block")
-    def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu"), block_ids=None):
+    def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu"), block_ids=None, skip=False):
         """Quantize the weights of a given block of the model.
 
         Args:
@@ -932,7 +955,9 @@ class AutoRound(object):
         if self.low_gpu_mem_usage:
             cache_device = "cpu"
         output = self.get_block_outputs(block, input_ids, input_others, self.train_bs, device, cache_device, batch_dim)
-
+        if skip:
+            logger.warning("skip quantization and return output directly, the q_outputs is the same as output.")
+            return output, output
         if q_input is not None:
             input_ids = q_input.to(cache_device)
         quantized_layer_names, unquantized_layer_names = wrapper_block(block, self.enable_minmax_tuning)
@@ -1072,6 +1097,29 @@ class AutoRound(object):
 
         else:
             return None, output
+    
+
+    def _save_model_to_local(self, model, tokenizer, _pre_quantized_block_num):
+        # save model
+        # time.strftime("%Y%m%d-%H%M%S") + str(random.randint(0, 1000)
+        try:
+            output_dir = self._tmp_prefix
+            quant_info_file = self._quant_info_file_path
+            model = model.to("cpu")
+            model.save_pretrained(output_dir)
+            tokenizer.save_pretrained(output_dir)
+            logger.info(f"!!!!!!!! save model quantized {_pre_quantized_block_num} to {output_dir}")
+            import json
+            # save quantization info
+            with open(os.path.join(output_dir, quant_info_file), "w") as f:
+                json.dump(
+                    {
+                        "pre_quantized_block_num": _pre_quantized_block_num,
+                    },
+                    f,
+                )
+        except Exception as e:
+            logger.error(f"save model failed: {e}")
 
     def qdq_weight_round(
         self,
@@ -1118,7 +1166,14 @@ class AutoRound(object):
                 m = WrapperMultiblock(modules)
 
             m = m.to(device)
-
+            
+            skip_quant_cur_block = False
+            if i + 1 <= self._pre_quantized_block_num:
+                # 0, 1 => skip
+                # 1, 1 => not skip
+                skip_quant_cur_block = True
+                logger.info(f"!!!!!!! skip quantization for block {i+1}/{len(block_names)}")
+            
             q_input, input_ids = self.quant_block(
                 m,
                 input_ids,
@@ -1126,8 +1181,11 @@ class AutoRound(object):
                 q_input=q_input,
                 device=device,
                 block_ids=i + 1,
+                skip=skip_quant_cur_block
             )
             m.to("cpu")
+            if not skip_quant_cur_block and global_config.save_checkpoint:
+                self._save_model_to_local(model, self.tokenizer, i+1)
             # torch.cuda.empty_cache()
 
         del q_input
