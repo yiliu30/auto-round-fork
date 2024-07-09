@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import torch
+import torchao.quantization
 import transformers
 
 from .utils import (
@@ -247,6 +248,76 @@ class WrapperWALayer(torch.nn.Module):
                                scale_dtype=self.orig_layer.scale_dtype, q_scale_thresh=self.orig_layer.q_scale_thresh)
         return self.orig_layer.forward(x)
 
+import torchao
+import os
+    
+class TorchWoqLinear(torch.nn.Module):
+    def __init__(self, b_int4pack, b_scales_and_zeros, q_group, bias=None):
+        super(TorchWoqLinear, self).__init__()
+        self.b_int4pack = b_int4pack
+        self.b_scales_and_zeros = b_scales_and_zeros
+        self.bias = bias
+        self.q_group = q_group
+    
+    
+    @staticmethod
+    def _weight_int4pack_mm(a, b_int4pack, b_scales_and_zeros, q_group):
+        a = a.to(torch.bfloat16)
+        # print(f"device: a: {a.device}, b_int4pack: {b_int4pack.device}, b_scales_and_zeros: {b_scales_and_zeros.device}, q_group: {q_group}")
+        return torch._weight_int4pack_mm(
+            a, b_int4pack, q_group, b_scales_and_zeros
+        )
+    
+    def forward(self, x):
+        origin_x_shape = x.shape
+        x = x.reshape(-1, origin_x_shape[-1])
+        # _weight_int4pack_mm expect input is 2-d tensor
+        out = self._weight_int4pack_mm(x, self.b_int4pack, self.b_scales_and_zeros, self.q_group)
+        out = out.reshape(origin_x_shape[:-1] + (out.shape[-1],))
+        if self.bias is not None:
+            out += self.bias
+        out = out.to(torch.float)
+        return out
+    
+    @classmethod
+    def create_from_autoround(cls, qweight, scales, zp, group_size, bias=None):
+        """Create a TorchWoqLinear from auto-round optimized qweight, scale, zeros.
+
+        Args:
+            n_groups = IC // group_size
+            qweight: [OC, IC], quantized by auto-round.
+            scales: [OC, n_groups], optimized by auto-round.
+            zp: [OC, n_groups], optimized by auto-round.
+            group_size: 
+            bias:
+
+        Returns:
+            
+        """
+        
+        # tinny_dequant = (tinny_quant - 8) * scale + tinny_zp
+        # dequant = (quant - zp) * scale
+        # dequant = (quant - 8 + 8 - zp) * scale
+        #         = (quant - 8) * scale + (8 - zp) * scale
+        # tinny_zp = (8 - zp) * scale
+        # Convert zero point optimized by auto-round to float point thar can be used by tinny gemm.
+        n, k = qweight.shape
+        assert scales.shape == torch.Size([qweight.shape[0], qweight.shape[1] // group_size]), f"expect scales shape {torch.Size([qweight.shape[0], qweight.shape[1] // group_size])}, but got {scales.shape}"
+        if zp is not None:
+            zp = zp.to(torch.bfloat16)
+            zp = zp.reshape(qweight.shape[0], -1)
+            assert zp.shape == torch.Size([qweight.shape[0], qweight.shape[1] // group_size]), f"expect zp shape {torch.Size([qweight.shape[0], qweight.shape[1] // group_size])}, but got {zp.shape}"
+            zeros = (8 - zp) * scales
+        
+        # Hard code inner_k_tiles = 2
+        inner_k_tiles = 2    
+        # Pack to tinygemm reqiured format
+        packed_q = torch.ops.aten._convert_weight_to_int4pack(qweight, inner_k_tiles)
+        scales_and_zeros = torchao.quantization.utils.pack_tinygemm_scales_and_zeros(scales, zeros)
+        q_groups = k // group_size
+        assert scales_and_zeros.shape == torch.Size([q_groups, n, 2])
+        return cls(packed_q.to("cuda"), scales_and_zeros.to("cuda"), group_size, bias)
+    
 
 class WrapperLinear(torch.nn.Module):
     def __init__(self, orig_layer, enable_minmax_tuning=True):
@@ -270,7 +341,7 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer = orig_layer
         self.num_bits = self.orig_layer.bits
         self.group_size = self.orig_layer.group_size
-        self.scale_dtype = self.orig_layer.scale_dtype
+        self.scale_dtype = torch.bfloat16 # self.orig_layer.scale_dtype
         self.sym = self.orig_layer.sym
         self.act_bits = self.orig_layer.act_bits
         self.act_group_size = self.orig_layer.act_group_size
@@ -318,18 +389,26 @@ class WrapperLinear(torch.nn.Module):
 
         qdq_weight, scale, zp = quant_tensor(self.orig_layer.weight, self.num_bits, self.group_size, self.sym, v,
                                              min_scale, max_scale, self.scale_dtype, self.weight_min, self.weight_max)
+        orig_shape = qdq_weight.shape
+        gs_shape = (-1, self.group_size)
+        qweight_with_origin_shape = (qdq_weight.reshape(gs_shape) / scale + zp).round().reshape(orig_shape)
+        qweight_with_origin_shape = qweight_with_origin_shape.to(torch.int32)
         scale = scale.reshape(qdq_weight.shape[0], -1)
-        if zp is not None:
-            zp = zp.reshape(qdq_weight.shape[0], -1)
-        self.orig_layer.weight.data.copy_(qdq_weight)
-        self.orig_layer.weight.grad = None
-        self.orig_layer.scale = scale.to("cpu")
-        self.orig_layer.zp = zp.to("cpu") if zp is not None else None
-        self.orig_layer.q_scale_thresh = self.q_scale_thresh
-        if self.act_quant:
-            wrapper_layer = WrapperWALayer(self.orig_layer)
-            return wrapper_layer
-        return self.orig_layer
+            
+        if os.environ.get('TORCH_WOQ', "0") == '1':
+            torch_woq_linear = TorchWoqLinear.create_from_autoround(qweight_with_origin_shape, scale, zp, self.group_size, self.orig_layer.bias)
+            self.orig_layer = torch_woq_linear
+            return self.orig_layer
+        else:
+            self.orig_layer.weight.data.copy_(qdq_weight)
+            self.orig_layer.weight.grad = None
+            self.orig_layer.scale = scale.to("cpu")
+            self.orig_layer.zp = zp.to("cpu") if zp is not None else None
+            self.orig_layer.q_scale_thresh = self.q_scale_thresh
+            if self.act_quant:
+                wrapper_layer = WrapperWALayer(self.orig_layer)
+                return wrapper_layer
+            return self.orig_layer
 
     def forward(self, x):
         """Performs forward pass through the wrapped linear layer with quantized weights.
@@ -383,7 +462,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         self.num_bits = self.orig_layer.bits
         self.group_size = self.orig_layer.group_size
         self.sym = self.orig_layer.sym
-        self.scale_dtype = self.orig_layer.scale_dtype
+        self.scale_dtype =  torch.bfloat16# self.orig_layer.scale_dtype
         self.act_bits = self.orig_layer.act_bits
         self.act_group_size = self.orig_layer.act_group_size
         self.act_sym = self.orig_layer.act_sym
