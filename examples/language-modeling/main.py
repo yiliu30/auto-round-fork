@@ -119,10 +119,17 @@ if __name__ == '__main__':
     parser.add_argument("--model_dtype", default=None, type=str,
                         help="force to convert the dtype, some backends supports fp16 dtype better")
 
+
     parser.add_argument("--act_bits", default=32, type=int,
                         help="activation bits")
-
+    parser.add_argument("--enable_awq", action='store_true',
+                        help="use awq ")
+    parser.add_argument("--quick_eval", action='store_true',
+                        help="use lambada_openai,hellaswag,winogrande,piqa,mmlu")
     args = parser.parse_args()
+    if args.quick_eval:
+        args.tasks = "lambada_openai,hellaswag,winogrande,piqa,mmlu"
+        print(f"quick eval tasks: {args.tasks}")
 
     if args.enable_minmax_tuning:
         print(
@@ -162,13 +169,30 @@ if __name__ == '__main__':
     torch_device = torch.device(device_str)
 
     is_glm = bool(re.search("chatglm", model_name.lower()))
-    if is_glm:
-        model = AutoModel.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+    if not args.enable_awq:
+        if is_glm:
+            model = AutoModel.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+                trust_remote_code=not args.disable_trust_remote_code
+            )
     else:
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
-            trust_remote_code=not args.disable_trust_remote_code
-        )
+        ##########################################
+        ## Load awq model
+        from awq import AutoAWQForCausalLM
+        model_path = model_name
+        awq_quant_config = { "zero_point": True, "q_group_size": args.group_size, "w_bit": args.bits, "version": "GEMM" }
+        model = AutoAWQForCausalLM.from_pretrained(
+            model_path,
+            #    **{"low_cpu_mem_usage": True, "use_cache": False}
+            )
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        # Quantize
+        model.quantize(tokenizer, quant_config=awq_quant_config)
+        print(f"Got awq model......")
+        model = model.model
+        
 
     from auto_round import (AutoRound,
                             AutoAdamRound)
@@ -349,6 +373,8 @@ if __name__ == '__main__':
                    device=torch_device, excel_file=excel_name)
 
     if not args.disable_eval and lm_eval_version == "0.4.2":
+        print(f"Using the latest lm-eval {lm_eval_version}")
+        print(f"tasks: {tasks}")
         from eval_042.evaluation import simple_evaluate
 
         if 'gpu' in deployment_device or len(gpu_formats) > 0:
