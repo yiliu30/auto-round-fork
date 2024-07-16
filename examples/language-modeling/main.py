@@ -13,7 +13,7 @@ torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 
 from transformers import set_seed
-
+import awq
 import re
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -45,6 +45,8 @@ if __name__ == '__main__':
 
     parser.add_argument("--iters", default=200, type=int,
                         help=" iters")
+    parser.add_argument("--teq_iters", default=None, type=int,
+                        help=" iters")
 
     parser.add_argument("--dataset", default="NeelNanda/pile-10k", type=str,
                         help="The dataset for quantization training. It can be a custom one.")
@@ -54,6 +56,9 @@ if __name__ == '__main__':
 
     parser.add_argument("--lr", default=None, type=float,
                         help="learning rate, if None, it will be set to 1.0/iters automatically")
+
+    parser.add_argument("--teq_lr", default=None, type=float,
+                        help="learning rate for teq, if None, it will be set to 1.0/iters automatically")
 
     parser.add_argument("--minmax_lr", default=None, type=float,
                         help="minmax learning rate, if None,it will beset to be the same with lr")
@@ -124,6 +129,9 @@ if __name__ == '__main__':
                         help="activation bits")
     parser.add_argument("--enable_awq", action='store_true',
                         help="use awq ")
+    parser.add_argument("--enable_teq", action='store_true',
+                        help="use teq ")
+
     parser.add_argument("--quick_eval", action='store_true',
                         help="use lambada_openai,hellaswag,winogrande,piqa,mmlu")
     args = parser.parse_args()
@@ -272,6 +280,9 @@ if __name__ == '__main__':
     if args.quant_lm_head and not args.low_gpu_mem_usage:
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
+        
+    model_type = awq.models.auto.check_and_get_model_type(model_name)
+    print(f"!!! detect model_type: {model_type}")
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
@@ -280,7 +291,12 @@ if __name__ == '__main__':
                       low_gpu_mem_usage=args.low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, layer_config=layer_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits)
+                      enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
+                      enable_teq=args.enable_teq,
+                      model_type=model_type,
+                      teq_lr=args.teq_lr,
+                      teq_iters=args.teq_iters,
+                      )
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 
@@ -383,10 +399,12 @@ if __name__ == '__main__':
             model_args = f"pretrained={eval_folder}"
         else:
             exit()  ## does not support cpu,xpu model eval
+        model_args += f",dtype={dtype}"
+        print(f"model_args: {model_args}")
         user_model = None
         if args.act_bits <= 8:
             user_model = model.to(device_str)
-
+        print(f"pass user model for evaluation")
         res = simple_evaluate(model="hf", model_args=model_args,
                               tasks=tasks,
                               batch_size=args.eval_bs, user_model=user_model)

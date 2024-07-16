@@ -78,6 +78,34 @@ class TestAutoRound(unittest.TestCase):
         if torch.cuda.is_available():
             autoround.save_quantized(output_dir="./saved", inplace=False)
 
+    def test_teq(self):
+        bits, group_size, sym = 4, 128, False
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            lr=1e-3,
+            sym=sym,
+            iters=5,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            enable_quanted_input=False,
+            enable_teq=True,
+            amp=False,
+            model_type="opt"
+            
+        )
+        autoround.quantize()
+
+        # autoround.save_quantized(output_dir="./saved", inplace=False, format="itrex")
+        # try:
+        #     import auto_gptq
+        # except:
+        #     return
+        # if torch.cuda.is_available():
+        #     autoround.save_quantized(output_dir="./saved", inplace=False)
+
     def test_sym(self):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
