@@ -1044,6 +1044,8 @@ class AutoRound(object):
             if i == 0:
                 init_loss = total_loss
             # logger.info(f"iter {i}, loss: {total_loss}")
+            # *Note: differ from quant_block, call step before update best_scale
+            self.step(scaler, optimizer, lr_schedule)
 
             if total_loss < best_loss:
                 best_loss = total_loss
@@ -1052,15 +1054,19 @@ class AutoRound(object):
                     # # print(f"get better result at iter {i}, the loss is {total_loss}", flush=True)
                     # best_v = collect_round_v(block)
                     # best_min_scale, best_max_scale = collect_minmax_scale(block)
+                    teq_util.update_best_scale(block)
                     last_best_iter = i
-            # if self.not_use_best_mse and i == self.iters - 1:
+                    logger.info(f"got best loss: {best_loss} at iter {i}")
+            if self.not_use_best_mse and i == self.iters - 1:
+                teq_util.update_best_scale(block)
+                logger.info(f"[TEQ] got best loss: {best_loss} at iter {i}")
             #     best_v = collect_round_v(block)
             #     best_min_scale, best_max_scale = collect_minmax_scale(block)
 
             if not self.not_use_best_mse:
                 if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
                     break
-            self.step(scaler, optimizer, lr_schedule)
+
 
         last_loss = total_loss
         # logger.info(f"iter {i}, last loss: {last_loss}")
@@ -1076,7 +1082,7 @@ class AutoRound(object):
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
-            autoround_quantizer.unwrapper_block(block, best_v, best_min_scale, best_max_scale)            
+            autoround_quantizer.unwrapper_block(block, best_v, best_min_scale, best_max_scale)
             teq_util.api_absorb_mul_(block)
         # if self.enable_quanted_input:
 

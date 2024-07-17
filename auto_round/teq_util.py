@@ -33,11 +33,23 @@ def assert_same(
     print("Same!")
 
 
+def update_best_scale(block: torch.nn.Module):
+    for _, mod in block.named_modules():
+        if isinstance(mod, ScaleMod):
+            mod.update_best_scale()
+
 class ScaleMod(torch.nn.Module):
     def __init__(self, shape: int):
         super().__init__()
-        self.scales = torch.nn.Parameter(torch.ones(shape))
-
+        self.scales = torch.nn.Parameter(torch.ones(shape), requires_grad=True)
+        self._best_scales = self.scales.clone().detach().requires_grad_(False)
+    
+    def update_best_scale(self):
+        self._best_scales.copy_(self.scales.data)
+    
+    def get_best_scale(self):
+        return self._best_scales.detach().cpu()
+    
     def forward(self, x):
         return self.scales.view(1, -1)
 
@@ -124,7 +136,7 @@ def _revert_replace(llama_decoder_layer, module_pairs_info: List[PairInfo]):
         layer_names = pair_info.layer_names
         div_linear = awq_utils.get_module_by_name_suffix(llama_decoder_layer, prev_op_name)
         awq_utils.set_module_name(llama_decoder_layer, prev_op_name, div_linear.linear)
-        scale_lst.append((prev_op_name, layer_names, div_linear.scale_mod.scales.detach().cpu()))
+        scale_lst.append((prev_op_name, layer_names, div_linear.scale_mod.get_best_scale()))
         for _layer_name in layer_names:
             mul_layer = awq_utils.get_module_by_name_suffix(llama_decoder_layer, _layer_name)
             awq_utils.set_module_name(llama_decoder_layer, _layer_name, mul_layer.linear)
@@ -232,7 +244,7 @@ class Test:
                 layer_names = pair["layer_names"]
                 div_linear = awq_utils.get_module_by_name_suffix(llama_decoder_layer, prev_op_name)
                 awq_utils.set_module_name(llama_decoder_layer, prev_op_name, div_linear.linear)
-                scale_lst.append((prev_op_name, layer_names, div_linear.scale_mod.scales.detach().cpu()))
+                scale_lst.append((prev_op_name, layer_names, div_linear.scale_mod.get_best_scale()))
                 for _layer_name in layer_names:
                     mul_layer = awq_utils.get_module_by_name_suffix(llama_decoder_layer, _layer_name)
                     awq_utils.set_module_name(llama_decoder_layer, _layer_name, mul_layer.linear)
@@ -339,6 +351,7 @@ class Test:
             len(get_tranable_params(llama_decoder_layer)) == 4
         ), f"There should be 4 trainable parameters. Got {len(get_tranable_params(llama_decoder_layer))}"
         absorb_mul_(llama_decoder_layer, module_pairs_info=module_pairs_info)
+        llama_decoder_layer = llama_decoder_layer.to(hidden_states.device)
         output_fused_mul = llama_decoder_layer(hidden_states, position_ids=position_ids)
         assert_same(output_ref, output_fused_mul)
 
@@ -372,7 +385,18 @@ class Test:
             len(get_tranable_params(llama_decoder_layer)) == 4
         ), f"There should be 4 trainable parameters. Got {len(get_tranable_params(llama_decoder_layer))}"
         api_absorb_mul_(llama_decoder_layer)
+        llama_decoder_layer = llama_decoder_layer.to(hidden_states.device)
         output_fused_mul = llama_decoder_layer(hidden_states, position_ids=position_ids)
         assert_same(output_ref, output_fused_mul)
+        
+    def test_scale_mod(self):
+        scale_mod = ScaleMod(10)
+        scale_mod(torch.randn(1, 10))
+        scale_mod.update_best_scale()
+        assert torch.equal(scale_mod.scales, scale_mod._best_scales)
+        scale_mod.scales = torch.nn.Parameter(scale_mod.scales + 1)
+        assert not torch.equal(scale_mod.scales, scale_mod._best_scales)
+        scale_mod.update_best_scale()
+        assert torch.equal(scale_mod.scales, scale_mod._best_scales)
 
 
