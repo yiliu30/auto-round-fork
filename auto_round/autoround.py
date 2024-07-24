@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
+import os
 import copy
 import time
 from typing import Optional, Union
@@ -42,7 +42,7 @@ from .utils import (
     to_device, get_layer_names_in_block,
 )
 import auto_round.quantizer as autoround_quantizer
-
+import os
 class AutoRound(object):
     """This is Signround+ which is an advanced version of Signround. For more information,
      please refer to Cheng, Wenhua, et al. "Optimize weight rounding via signed gradient descent
@@ -705,13 +705,17 @@ class AutoRound(object):
             )
         else:
             optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
-
-        if self.lr_scheduler is None:
-            lr_schedule = torch.optim.lr_scheduler.LinearLR(
-                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters, verbose=False
-            )
+            
+        if os.environ.get("USE_CONSTANT_LR", "0") == "1":
+            lr_schedule = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0, verbose=False)
+            logger.info("Using constant learning rate")
         else:
-            lr_schedule = copy.deepcopy(self.lr_scheduler)
+            if self.lr_scheduler is None:
+                lr_schedule = torch.optim.lr_scheduler.LinearLR(
+                    optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters, verbose=False
+                )
+            else:
+                lr_schedule = copy.deepcopy(self.lr_scheduler)
         nsamples = len(inputs)
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
@@ -799,6 +803,8 @@ class AutoRound(object):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
+        if os.environ.get("DEBUG_INPUT", "0") == "1":
+            teq_util._debug_input(input_ids, input_others)
 
         output = self.get_block_outputs(block, input_ids, input_others, self.train_bs * self.infer_bs_coeff, device,
                                         self.cache_device)
@@ -835,7 +841,7 @@ class AutoRound(object):
 
         if self.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
-                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters, verbose=False
+                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters, verbose=True
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
@@ -901,6 +907,7 @@ class AutoRound(object):
                 if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
                     break
             self.step(scaler, optimizer, lr_schedule)
+            # logger.debug(f"iters: {i} last lr: {lr_schedule.get_last_lr()}; lr: {lr_schedule.get_lr()}")
 
         last_loss = total_loss
         best_iter = self.iters

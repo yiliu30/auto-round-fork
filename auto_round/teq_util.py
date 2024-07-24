@@ -16,6 +16,29 @@ import awq.utils
 import awq.utils.utils
 import awq.utils.utils as awq_utils
 
+from auto_round.utils import logger
+
+def _tensor_bytes(t: torch.Tensor):
+    logger.debug(f"Tensor shape: {t.shape}, dtype: {t.dtype}, device: {t.device}")
+    return t.numel() * t.element_size()
+
+def _any_type_input_size(input):
+    if isinstance(input, torch.Tensor):
+        return _tensor_bytes(input)
+    elif isinstance(input, tuple):
+        return sum(_any_type_input_size(i) for i in input) or 0
+    elif isinstance(input, list):
+        return sum(_any_type_input_size(i) for i in input) or 0
+    elif isinstance(input, dict):
+        return sum(_any_type_input_size(i) for i in input.values()) or 0
+    else:
+        logger.info(f"Unsupported type: {type(input)}")
+        return 0
+
+def _debug_input(*args, **kwargs):
+    final_size = sum(_any_type_input_size(i) for i in args) + sum(_any_type_input_size(i) for i in kwargs.values())
+    logger.info(f"Input size: {final_size}, need mem: {final_size / 1024 / 1024} MB")
+    return final_size
 
 def assert_same(
     a: Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]],
@@ -38,7 +61,9 @@ def update_best_scale(block: torch.nn.Module):
         if isinstance(mod, ScaleMod):
             mod.update_best_scale()
 
-class ScaleMod(torch.nn.Module):
+
+
+class ScaleModV1(torch.nn.Module):
     def __init__(self, shape: int):
         super().__init__()
         self.scales = torch.nn.Parameter(torch.ones(shape), requires_grad=True)
@@ -54,8 +79,87 @@ class ScaleMod(torch.nn.Module):
         return self.scales.view(1, -1)
 
     def __repr__(self):
-        return f"ScaleMod(shape={self.scales.shape})"
+        return f"ScaleModV1(shape={self.scales.shape})"
+    
+class ScaleModV2(torch.nn.Module):
+    def __init__(self, shape: int):
+        super().__init__()
+        # clip to 0~1
+        # lr, 1.0/steps -0.5, 0.5
+        self.scales1 = torch.nn.Parameter(torch.ones(shape), requires_grad=True)
+        self.scales2 = torch.nn.Parameter(torch.ones(shape), requires_grad=True)
+        self._best_scales = self._get_final_scale().detach().requires_grad_(False)
 
+    def _get_final_scale(self):
+        s1 = self.scales1
+        s2 = self.scales2
+        s2 = torch.where(s2 == 0, torch.ones_like(s2), s2)
+        return s1/s2
+    
+    @torch.no_grad()
+    def update_best_scale(self):
+        self._best_scales.copy_(self._get_final_scale())
+    
+    @torch.no_grad()
+    def get_best_scale(self):
+        return self._best_scales.detach().cpu()
+    
+    def forward(self, x):
+        final_scale = self._get_final_scale()
+        return final_scale.view(1, -1)
+
+    def __repr__(self):
+        return f"ScaleModV2(scale1={self.scales1.shape}, scale2={self.scales2.shape})"
+
+
+
+class ScaleModV3(torch.nn.Module):
+    def __init__(self, shape: int):
+        super().__init__()
+        # clip to 0~1
+        # lr, 1.0/steps -0.5, 0.5
+        # 200 steps, 1/200, (0 + 1/200) * 200 /2
+        self.scales1 = torch.nn.Parameter(torch.ones(shape) * 0.5, requires_grad=True) 
+        self.scales2 = torch.nn.Parameter(torch.ones(shape)  * 0.5, requires_grad=True)
+        self._best_scales = self._get_final_scale().detach().requires_grad_(False)
+
+    def _get_final_scale(self):
+        s1 = self.scales1.clamp(0.0, 1.0)
+        s2 = self.scales2.clamp(0.0, 1.0)
+        s2 = torch.where(s2 == 0, torch.ones_like(s2), s2)
+        return s1/s2
+    
+    @torch.no_grad()
+    def update_best_scale(self):
+        self._best_scales.copy_(self._get_final_scale())
+    
+    @torch.no_grad()
+    def get_best_scale(self):
+        return self._best_scales.detach().cpu()
+    
+    def forward(self, x):
+        final_scale = self._get_final_scale()
+        return final_scale.view(1, -1)
+
+    def __repr__(self):
+        return f"ScaleModV3(scale1={self.scales1.shape}, scale2={self.scales2.shape})"
+
+
+
+import os
+
+
+scale_mod_version = os.environ.get("ScaleMod", "1")
+
+if scale_mod_version == "1":
+    ScaleMod = ScaleModV1
+elif scale_mod_version == "2":
+    ScaleMod = ScaleModV2
+elif scale_mod_version == "3":
+    ScaleMod = ScaleModV3
+else:
+    raise ValueError(f"Unsupported ScaleMod version: {scale_mod_version}")
+print(f"Using ScaleMod version: {scale_mod_version}")
 
 class DivLinear(torch.nn.Module):
     def __init__(self, linear: torch.nn.Module, scale_mod: ScaleMod):
@@ -347,9 +451,10 @@ class Test:
         output = llama_decoder_layer(hidden_states, position_ids=position_ids)
         print(llama_decoder_layer)
         assert_same(output_ref, output)
-        assert (
-            len(get_tranable_params(llama_decoder_layer)) == 4
-        ), f"There should be 4 trainable parameters. Got {len(get_tranable_params(llama_decoder_layer))}"
+        if scale_mod_version == "1":
+            assert (
+                len(get_tranable_params(llama_decoder_layer)) == 4
+            ), f"There should be 4 trainable parameters. Got {len(get_tranable_params(llama_decoder_layer))}"
         absorb_mul_(llama_decoder_layer, module_pairs_info=module_pairs_info)
         llama_decoder_layer = llama_decoder_layer.to(hidden_states.device)
         output_fused_mul = llama_decoder_layer(hidden_states, position_ids=position_ids)
@@ -381,14 +486,16 @@ class Test:
         output = llama_decoder_layer(hidden_states, position_ids=position_ids)
         print(llama_decoder_layer)
         assert_same(output_ref, output)
-        assert (
-            len(get_tranable_params(llama_decoder_layer)) == 4
-        ), f"There should be 4 trainable parameters. Got {len(get_tranable_params(llama_decoder_layer))}"
+        if scale_mod_version == "1":
+            assert (
+                len(get_tranable_params(llama_decoder_layer)) == 4
+            ), f"There should be 4 trainable parameters. Got {len(get_tranable_params(llama_decoder_layer))}"
         api_absorb_mul_(llama_decoder_layer)
         llama_decoder_layer = llama_decoder_layer.to(hidden_states.device)
         output_fused_mul = llama_decoder_layer(hidden_states, position_ids=position_ids)
         assert_same(output_ref, output_fused_mul)
-        
+    
+    @pytest.mark.skipif(scale_mod_version != "1", reason="Only works for ScaleModV1")
     def test_scale_mod(self):
         scale_mod = ScaleMod(10)
         scale_mod(torch.randn(1, 10))

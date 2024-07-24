@@ -35,7 +35,8 @@ def warning_once(self, msg: str):
 
 logging.Logger.warning_once = warning_once
 logger = logging.getLogger("autoround")
-logger.setLevel(logging.INFO)
+level = os.environ.get("LOGLEVEL", "INFO")
+logger.setLevel(level)
 # logger.propagate = False
 fh = logging.StreamHandler()
 fh_formatter = logging.Formatter("%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s", "%Y-%m-%d %H:%M:%S")
