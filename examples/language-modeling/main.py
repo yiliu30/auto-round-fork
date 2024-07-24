@@ -409,5 +409,20 @@ if __name__ == '__main__':
                               tasks=tasks,
                               batch_size=args.eval_bs, user_model=user_model)
         from lm_eval.utils import make_table
-
         print(make_table(res))
+        try:
+            acc_res = dict()
+            rres = res["results"]
+            for task_name, task_res in rres.items():
+                for metric_name, metric_res in task_res.items():
+                    if "acc" in metric_name and "std" not in metric_name and "norm" not in metric_name:
+                        print(f"{task_name}: {metric_name} {metric_res}")
+                        acc_res[task_name] = metric_res
+            # prin table
+            print(f"-------acc--------")
+            for task_name, task_res in acc_res.items():
+                print(f"{task_name}: {task_res}")
+        except Exception as e:
+            print(f"error: {e}")
+
+        
