@@ -15,7 +15,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 from transformers import set_seed
 import awq
 import re
-
+from auto_round.utils import logger
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 if __name__ == '__main__':
@@ -254,6 +254,26 @@ if __name__ == '__main__':
                 layer_config[n] = {"bits": 32}
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
+        if os.environ.get("MIX_PRECISION", "0") != "0":
+            high_bits_op_name_lst = ["attn_v", "ffn_down", "v_proj", "down_proj"]
+            mixed_code = os.environ.get("MIX_PRECISION", "0")
+            if mixed_code == "48":
+                high_bits = 8
+                low_bits = 4
+            elif mixed_code == "24":
+                high_bits = 4
+                low_bits = 2
+            else:
+                raise ValueError(f"Unsupported MIX_PRECISION: {mixed_code}")
+            if isinstance(m, torch.nn.Linear):
+                if any([item in n for item in high_bits_op_name_lst]):
+                    layer_config[n] = {"bits": high_bits}
+                    if args.act_bits < 32:
+                        #  "act_bits": high_bits
+                        layer_config[n]["act_bits"] = high_bits
+                    logger.info(f"quantize {n} with {high_bits} bits, {layer_config[n]}")
+
+
     lm_head_layer_name = "lm_head"
     for n, _ in model.named_modules():
         lm_head_layer_name = n
