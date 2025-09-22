@@ -156,6 +156,17 @@ def mxfp4_scheme_checker(
     return _scheme_checker_common(config, ar_schemes.MXFP4)
 
 
+def nvfp4_scheme_checker(
+    in_feature: int,
+    out_feature: int,
+    config: QuantizationScheme,
+    in_feature_multiplier: Optional[int] = None,
+    out_feature_multiplier: Optional[int] = None,
+):
+
+    return _scheme_checker_common(config, ar_schemes.NVFP4)
+
+
 BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
     device=["cuda"],
     sym=[True, False],
@@ -250,7 +261,7 @@ BackendInfos["auto_round:mxfp8"] = BackendInfo(
     bits=[8],
     priority=0,
     checkers=[mxfp8_scheme_checker],
-    alias=["torch"],
+    alias=["auto_round:llm_compressor"],
     requirements=["auto-round>0.7.0"],
 )
 
@@ -264,6 +275,20 @@ BackendInfos["auto_round:mxfp4"] = BackendInfo(
     bits=[4],
     priority=0,
     checkers=[mxfp4_scheme_checker],
+    alias=["auto_round:llm_compressor"],
+    requirements=["auto-round>0.7.0"],
+)
+
+# NVFP4
+
+BackendInfos["auto_round:nvfp4"] = BackendInfo(
+    device=["xpu", "cuda", "cpu"],
+    packing_format="",
+    sym=[True],
+    dtype=["float32", "float16", "bfloat16"],
+    bits=[4],
+    priority=0,
+    checkers=[nvfp4_scheme_checker],
     alias=["auto_round:llm_compressor"],
     requirements=["auto-round>0.7.0"],
 )
@@ -540,6 +565,8 @@ def dynamic_import_inference_linear(backend, config):
         return ar_qmodules.MXFP8QuantLinear
     if AutoRoundFormat.MXFP4.value in backend:
         return ar_qmodules.MXFP4QuantLinear
+    if AutoRoundFormat.NVFP4.value in backend:
+        return ar_qmodules.NVFP4QuantLinear
 
     if "qbits" in backend:
         try:
