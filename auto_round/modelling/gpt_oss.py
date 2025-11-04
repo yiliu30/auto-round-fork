@@ -105,6 +105,21 @@ class SequentialGPTOSSMoE(nn.Module):
 
         out = self.shared_expert(x) if self.shared_expert is not None else torch.zeros_like(x)
 
+        # top_k_index, top_k_weights = router_indices, router_scores
+        # final_hidden_states = torch.zeros_like(out)
+        # expert_mask = torch.nn.functional.one_hot(top_k_index, num_classes=self.num_experts).permute(2, 1, 0)
+
+        # expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+        # for expert_idx in expert_hit:
+        #     idx, top_x = torch.where(expert_mask[expert_idx].squeeze(0))
+        #     current_state = x[None, top_x].reshape(-1, x.shape[-1])
+        #     expert = self.experts[expert_idx]
+
+        #     current_hidden_states = expert(current_state) * top_k_weights[top_x, idx, None]
+        #     final_hidden_states.index_add_(0, top_x, current_hidden_states.to(x.dtype))
+        # out = final_hidden_states
+
+        # breakpoint()
         # Accumulate expert outputs for chosen experts only
         for j in range(self.top_k):
             idx = router_indices[:, j]
@@ -116,6 +131,7 @@ class SequentialGPTOSSMoE(nn.Module):
 
         out = out.view(B, T, H)
         router_scores = router_scores.view(B * T, -1)  # shape doesn't matter much; it’s ignored by the decoder
+
         return out, router_scores
 
 
