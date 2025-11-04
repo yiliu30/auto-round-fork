@@ -58,9 +58,12 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
     # Scale up so appropriate number of mbits are in the integer portion of the number
     tensor = tensor * (2 ** (mbits - 2)) if private_exp is None else tensor / (2**private_exp) * (2 ** (mbits - 2))
     if mantissa_rounding == "even":
-        abs_tensor = torch.abs(tensor)
-        mask_tensor = ((abs_tensor - 0.5) % 2 == torch.zeros_like(abs_tensor)).type(tensor.dtype)
-        tensor = torch.sign(tensor) * (floor_ste(abs_tensor + 0.5) - mask_tensor)
+        # abs_tensor = torch.abs(tensor)
+        abs_tensor = tensor.abs()
+        # mask_tensor = ((abs_tensor - 0.5) % 2 == torch.zeros_like(abs_tensor)).type(tensor.dtype)
+        mask_tensor = ((abs_tensor.sub_(0.5) % 2) == torch.zeros_like(abs_tensor)).to(tensor.dtype)
+        # tensor = (tensor > 0) * (floor_ste(abs_tensor + 0.5) - mask_tensor)
+        tensor = (tensor > 0) * (floor_ste(abs_tensor.add_(0.5)).sub_(mask_tensor))
     elif mantissa_rounding == "nearest":
         tensor = torch.sign(tensor) * round_ste(torch.abs(tensor))
     elif mantissa_rounding == "floor":
@@ -73,11 +76,55 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
     # Undo scaling
     tensor = tensor / (2 ** (mbits - 2)) if private_exp is None else tensor / (2 ** (mbits - 2)) * (2**private_exp)
 
-    tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
+    # tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
+    tensor.clamp_(min=-max_norm, max=max_norm)
     return tensor
 
 
-def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_rounding="even", data_type="mx_fp", **kwargs):
+# def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
+#     with torch.no_grad():
+#         res = _quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even")
+#     return (res - tensor).detach() + tensor
+
+
+from torch.utils.checkpoint import checkpoint
+
+
+class QuantMXWithCheckpoint(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, tensor, bits=4, group_size=-1):
+        # Store only minimal information for backward
+        ctx.bits = bits
+        ctx.group_size = group_size
+        # ctx.kwargs = kwargs
+
+        # Forward pass without saving intermediates
+        with torch.no_grad():
+            result, shared_exp, _ = quant_mx_inner(tensor, bits, group_size)
+
+        # Only save what's absolutely necessary
+        ctx.save_for_backward(tensor, shared_exp)
+        return result, shared_exp
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        tensor, shared_exp = ctx.saved_tensors
+
+        # Recompute forward pass during backward
+        with torch.enable_grad():
+            # Recreate the computation with gradient tracking
+            tensor_recompute = tensor.detach().requires_grad_(True)
+            result_recompute, _, _ = quant_mx_inner(tensor_recompute, ctx.bits, ctx.group_size)
+
+            # Compute gradients
+            torch.autograd.backward(result_recompute, grad_output)
+
+        return tensor_recompute.grad, None, None, None
+
+
+def quant_mx_inner(
+    tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_rounding="even", data_type="mx_fp", **kwargs
+):
     """Quantize the given tensor using the specified parameters.
 
     This function performs quantization on the `tensor` tensor according to the
@@ -115,16 +162,29 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_roundin
     shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), torch.log2(max_val))
     shared_exp = floor_ste(shared_exp)
     scale_emax = 2 ** (8 - 1) - 1
-    shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
+    shared_exp.sub_(emax).clamp_(min=-scale_emax, max=scale_emax)
 
     scale = torch.pow(2, shared_exp)
     tensor = tensor / scale + v
-    tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
+    # tensor = tensor / scale
+    # tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
+    tensor.clamp_(min=-max_norm, max=max_norm)
     tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
 
     tensor = tensor * scale
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
+
+
+def quant_mx_wrapper(
+    tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_rounding="even", data_type="mx_fp", **kwargs
+):
+    result, shared_exp = QuantMXWithCheckpoint.apply(tensor)
+    return result, shared_exp, None
+
+
+# quant_mx = quant_mx_wrapper
+quant_mx = quant_mx_inner
 
 
 def quant_mx_rceil(
