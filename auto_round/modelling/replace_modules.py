@@ -32,7 +32,8 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
     Subclasses must:
     1. Implement `original_module_class()` to return the target module class name
     2. Implement `__init__()` with signature:
-       (self, original, config, calibrate_all_experts=True)
+       (self, original, config)
+    3. Optionally implement `is_to_be_replaced` to customize replacement logic
     """
 
     # Registry: module class name -> replacement module class
