@@ -178,3 +178,59 @@ def apply_replacements(
         logger.info(f"Replaced {len(replaced)} modules")
 
     return model
+
+
+def apply_replacements_to_block(
+    model: torch.nn.Module,
+    block_name: str,
+) -> int:
+    """
+    Function to apply module replacements to a specific block in the model.
+
+    This scans only the specified block and replaces any registered modules within it.
+    This is more memory-efficient than replacing all modules at once.
+
+    Args:
+        model: The model containing the block to modify (modified in-place).
+        block_name: The name of the block to apply replacements to.
+
+    Returns:
+        The number of modules replaced in this block.
+    """
+    _import_required_replacements(model)
+    
+    # Get the block module
+    try:
+        block = model.get_submodule(block_name)
+    except AttributeError:
+        logger.warning(f"Block '{block_name}' not found in model")
+        return 0
+    
+    replaced_count = 0
+    
+    # Step 1: Collect modules that need replacement in this block
+    modules_to_replace = []
+    for name, module in block.named_modules():
+        # skip replaced modules
+        if isinstance(module, ReplacementModuleBase):
+            continue
+        class_name = module.__class__.__name__
+        if ReplacementModuleBase.is_to_be_replaced(module, class_name):
+            # Full name includes block prefix
+            full_name = f"{block_name}.{name}" if name else block_name
+            modules_to_replace.append((full_name, name, module, class_name))
+    
+    # Step 2: Replace modules in this block
+    if modules_to_replace:
+        logger.debug(f"Found {len(modules_to_replace)} modules to replace in block '{block_name}'")
+        for full_name, local_name, module, class_name in modules_to_replace:
+            replacement_cls = ReplacementModuleBase.get_replacement_class(class_name)
+            replacement = replacement_cls.from_original(
+                module,
+                model.config,
+            )
+            # Use full name to set in the model
+            model.set_submodule(full_name, replacement)
+            replaced_count += 1
+    
+    return replaced_count
