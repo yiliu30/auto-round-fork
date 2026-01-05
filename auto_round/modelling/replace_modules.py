@@ -202,7 +202,7 @@ def apply_replacements_to_block(
     # Get the block module
     try:
         block = model.get_submodule(block_name)
-    except AttributeError:
+    except (AttributeError, ModuleNotFoundError):
         logger.warning(f"Block '{block_name}' not found in model")
         return 0
     
@@ -217,7 +217,7 @@ def apply_replacements_to_block(
         class_name = module.__class__.__name__
         if ReplacementModuleBase.is_to_be_replaced(module, class_name):
             # Full name includes block prefix
-            # Handle empty string name (root of block) by using just block_name
+            # Note: name is empty string when module is the root of the block itself
             full_name = f"{block_name}.{name}" if name else block_name
             modules_to_replace.append((full_name, name, module, class_name))
     

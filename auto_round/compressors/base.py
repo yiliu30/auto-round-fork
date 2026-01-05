@@ -1404,10 +1404,11 @@ class BaseCompressor(object):
         self._check_compatibility()
         formats = self.formats if hasattr(self, "formats") else None
         
-        # Module replacement is now done block-wise for memory efficiency.
+        # Module replacement is now done block-wise to reduce memory overhead during replacement.
         # Previously: self.model = update_module(self.model, formats=formats)
         # Now: Modules are replaced per-block in _quantize_blocks() and _quantize_via_rtn_blockwise()
-        # This reduces RAM usage by only loading the block being quantized instead of the entire model.
+        # This reduces memory overhead by only replacing modules in the block being quantized,
+        # rather than scanning and replacing all modules in the entire model at once.
         
         # Temporary names must be assigned after the model structure changes;
         # placing them earlier would cause them to be removed when the module is replaced.
