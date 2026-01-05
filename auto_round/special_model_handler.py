@@ -59,6 +59,25 @@ def update_module(model, formats: list[OutputFormat] = None):
     return apply_replacements(model)
 
 
+def update_module_for_block(model, block_name: str, formats: list[OutputFormat] = None):
+    """Apply module replacements to a specific block in the model.
+    
+    Args:
+        model: The model containing the block
+        block_name: Name of the block to update
+        formats: Output formats (if GGUF, skip replacement)
+        
+    Returns:
+        Number of modules replaced in this block
+    """
+    from auto_round.modelling.replace_modules import apply_replacements_to_block
+    
+    if formats is not None and any([format_.is_gguf() for format_ in formats]):
+        return 0
+
+    return apply_replacements_to_block(model, block_name)
+
+
 def _get_deepseek_vl2_multimodal_block(model, quant_vision=False):
     model.forward = model.language.forward
     block_names = []

@@ -64,7 +64,7 @@ from auto_round.schemes import (
     preset_name_to_scheme,
 )
 from auto_round.sign_sgd import SignSGD
-from auto_round.special_model_handler import update_module
+from auto_round.special_model_handler import update_module, update_module_for_block
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
@@ -1260,6 +1260,8 @@ class BaseCompressor(object):
             accelerate.hooks.remove_hook_from_submodules(self.model)
 
         pbar = tqdm(range(sum(len(block) for block in all_blocks)))
+        
+        formats = self.formats if hasattr(self, "formats") else None
 
         for block_names in all_blocks:
             first_block = block_names[0]
@@ -1292,6 +1294,10 @@ class BaseCompressor(object):
 
             for block_name in block_names:
                 pbar.set_description(f"Quantizing {block_name}")
+                
+                # Apply module replacement for this block before quantization
+                update_module_for_block(self.model, block_name, formats=formats)
+                
                 block = get_module(self.model, block_name)
                 if is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype, device=self.device)
@@ -1397,11 +1403,14 @@ class BaseCompressor(object):
 
         self._check_compatibility()
         formats = self.formats if hasattr(self, "formats") else None
-        # It is best to modify the model structure in the quantize function and check the format,
-        # because it may cause the gguf format to not be exported normally.
-        self.model = update_module(self.model, formats=formats)
-
-        # Temporary names must be assigned after handle_moe_model;
+        
+        # Module replacement is now done block-wise to reduce memory overhead during replacement.
+        # Previously: self.model = update_module(self.model, formats=formats)
+        # Now: Modules are replaced per-block in _quantize_blocks() and _quantize_via_rtn_blockwise()
+        # This reduces memory overhead by only replacing modules in the block being quantized,
+        # rather than scanning and replacing all modules in the entire model at once.
+        
+        # Temporary names must be assigned after the model structure changes;
         # placing them earlier would cause them to be removed when the module is replaced.
         for n, m in self.model.named_modules():
             m.tmp_name = n
@@ -2852,16 +2861,27 @@ class BaseCompressor(object):
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
 
+        formats = self.formats if hasattr(self, "formats") else None
+        
         for i in range(0, len(block_names), nblocks):
             if i != 0:
                 pbar.update(1)
             if nblocks == 1:
                 n = block_names[i]
                 pbar.set_description(f"Quantizing {n}")
+                
+                # Apply module replacement for this block before quantization
+                update_module_for_block(model, n, formats=formats)
+                
                 m = get_module(model, n)
             else:
                 names = block_names[i : min(i + nblocks, len(block_names))]
                 pbar.set_description(f"Quantizing [{i + 1}-{min(i + nblocks, len(block_names))}]/{len(block_names)}")
+                
+                # Apply module replacement for each block in this group
+                for block_name in names:
+                    update_module_for_block(model, block_name, formats=formats)
+                
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
