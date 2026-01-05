@@ -217,6 +217,7 @@ def apply_replacements_to_block(
         class_name = module.__class__.__name__
         if ReplacementModuleBase.is_to_be_replaced(module, class_name):
             # Full name includes block prefix
+            # Handle empty string name (root of block) by using just block_name
             full_name = f"{block_name}.{name}" if name else block_name
             modules_to_replace.append((full_name, name, module, class_name))
     

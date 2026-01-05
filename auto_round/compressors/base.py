@@ -1403,12 +1403,13 @@ class BaseCompressor(object):
 
         self._check_compatibility()
         formats = self.formats if hasattr(self, "formats") else None
-        # Note: Module replacement moved to block-wise processing for memory efficiency
-        # It is best to modify the model structure in the quantize function and check the format,
-        # because it may cause the gguf format to not be exported normally.
-        # self.model = update_module(self.model, formats=formats)  # Commented out for block-wise replacement
-
-        # Temporary names must be assigned after handle_moe_model;
+        
+        # Module replacement is now done block-wise for memory efficiency.
+        # Previously: self.model = update_module(self.model, formats=formats)
+        # Now: Modules are replaced per-block in _quantize_blocks() and _quantize_via_rtn_blockwise()
+        # This reduces RAM usage by only loading the block being quantized instead of the entire model.
+        
+        # Temporary names must be assigned after the model structure changes;
         # placing them earlier would cause them to be removed when the module is replaced.
         for n, m in self.model.named_modules():
             m.tmp_name = n

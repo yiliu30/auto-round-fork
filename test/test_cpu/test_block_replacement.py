@@ -4,11 +4,12 @@ Simple unit test to verify the block-wise module replacement logic works.
 This test creates mock objects to test the functionality without needing actual models.
 """
 import sys
+import os
 import torch
 import torch.nn as nn
 
-# Add the auto_round module to the path
-sys.path.insert(0, '/home/runner/work/auto-round-fork/auto-round-fork')
+# Add the auto_round module to the path using relative imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from auto_round.modelling.replace_modules import ReplacementModuleBase, apply_replacements_to_block
 
