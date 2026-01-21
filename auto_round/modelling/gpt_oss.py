@@ -20,16 +20,8 @@ from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
 
 from auto_round.modelling.replace_modules import ReplacementModuleBase
+from auto_round.modelling.utils import _update_parameter
 from auto_round.utils import LazyImport, clear_memory, logger, unsupported_meta_device
-
-
-def _update_parameter(
-    module: torch.nn.Module,
-    name: str,
-    data: torch.Tensor,
-) -> None:
-    param = getattr(module, name)
-    param.data.copy_(data)
 
 
 class GPTOssSingleExpert(nn.Module):
@@ -71,6 +63,7 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
         self.top_k = top_k
         self.router = original.router
         self.shared_expert = getattr(original, "shared_expert", None)
+        self._source_original = original
 
         # Number of experts
         E = original.experts.gate_up_proj.shape[0]
@@ -79,10 +72,12 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
         # Build per-expert MLPs
         self.experts = nn.ModuleList()
         target_device = next(original.experts.parameters()).device
-        with skip_weights_initialize(), torch.device(target_device):
+        with skip_weights_initialize(), torch.device("meta"):
             for _ in range(E):
                 self.experts.append(GPTOssSingleExpert(hidden_size, intermediate_size, dtype=dtype))
 
+    def _materialize_weights(self) -> None:
+        original = self._source_original
         if not unsupported_meta_device(original):
             for i, mlp in enumerate(self.experts):
                 _update_parameter(mlp.gate_proj, "weight", original.experts.gate_up_proj[i, :, ::2].T)
@@ -92,7 +87,7 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
                 _update_parameter(mlp.gate_proj, "bias", original.experts.gate_up_proj_bias[i, ::2])
                 _update_parameter(mlp.up_proj, "bias", original.experts.gate_up_proj_bias[i, 1::2])
                 _update_parameter(mlp.down_proj, "bias", original.experts.down_proj_bias[i])  # [H]
-            original.experts.to_empty(device="meta")  # release original experts parameters
+            original.experts.to_empty(device="meta")
             clear_memory()
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
